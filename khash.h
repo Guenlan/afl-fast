@@ -98,7 +98,7 @@ static const uint32_t __ac_prime_list[__ac_HASH_PRIME_SIZE] =
   100663319ul,  201326611ul,  402653189ul,  805306457ul,  1610612741ul,
   3221225473ul, 4294967291ul
 };
-
+//这些宏是什么意思,可能是hash表的一个操作
 #define __ac_isempty(flag, i) ((flag[i>>4]>>((i&0xfU)<<1))&2)
 #define __ac_isdel(flag, i) ((flag[i>>4]>>((i&0xfU)<<1))&1)
 #define __ac_iseither(flag, i) ((flag[i>>4]>>((i&0xfU)<<1))&3)
@@ -108,7 +108,8 @@ static const uint32_t __ac_prime_list[__ac_HASH_PRIME_SIZE] =
 #define __ac_set_isdel_true(flag, i) (flag[i>>4]|=1ul<<((i&0xfU)<<1))
 
 static const double __ac_HASH_UPPER = 0.77;
-
+//第二个和第三个都是类型
+//这个宏下定义了所有函数
 #define KHASH_INIT(name, khkey_t, khval_t, kh_is_map, __hash_func, __hash_equal) \
     typedef struct {                                                    \
         khint_t n_buckets, size, n_occupied, upper_bound;               \
@@ -142,7 +143,7 @@ static const double __ac_HASH_UPPER = 0.77;
             inc = 1 + k % (h->n_buckets - 1); last = i;                 \
             while (!__ac_isempty(h->flags, i) && (__ac_isdel(h->flags, i) || !__hash_equal(h->keys[i], key))) { \
                 if (i + inc >= h->n_buckets) i = i + inc - h->n_buckets; \
-                else i += inc;                                          \
+                else i += inc;                                   	    \
                 if (i == last) return h->n_buckets;                     \
             }                                                           \
             return __ac_iseither(h->flags, i)? h->n_buckets : i;            \
@@ -254,17 +255,17 @@ static const double __ac_HASH_UPPER = 0.77;
         }                                                               \
     }
 
-/* --- BEGIN OF HASH FUNCTIONS --- */
+/* --- BEGIN OF HASH FUNCTIONS --- */ //这里是hash函数定义
 
-#define kh_int_hash_func(key) (uint32_t)(key)
+#define kh_int_hash_func(key) (uint32_t)(key) //32位的hash
 #define kh_int_hash_equal(a, b) (a == b)
-#define kh_int64_hash_func(key) (uint32_t)((key)>>33^(key)^(key)<<11)
+#define kh_int64_hash_func(key) (uint32_t)((key)>>33^(key)^(key)<<11) //64位的hash,先移位,再位运算
 #define kh_int64_hash_equal(a, b) (a == b)
-static inline khint_t __ac_X31_hash_string(const char *s)
+static inline khint_t __ac_X31_hash_string(const char *s) //可能是进行hash操作
 {
     khint_t h = *s;
-    if (h) for (++s ; *s; ++s) h = (h << 5) - h + *s;
-    return h;
+    if (h) for (++s ; *s; ++s) h = (h << 5) - h + *s; //这个应该是hash操作
+    return h;  //h表示hash 值
 }
 #define kh_str_hash_func(key) __ac_X31_hash_string(key)
 #define kh_str_hash_equal(a, b) (strcmp(a, b) == 0)
@@ -272,9 +273,8 @@ static inline khint_t __ac_X31_hash_string(const char *s)
 /* --- END OF HASH FUNCTIONS --- */
 
 /* Other necessary macros... */
-
+//指向上面声明的函数
 #define khash_t(name) kh_##name##_t
-
 #define kh_init(name) kh_init_##name()
 #define kh_destroy(name, h) kh_destroy_##name(h)
 #define kh_clear(name, h) kh_clear_##name(h)
@@ -282,18 +282,19 @@ static inline khint_t __ac_X31_hash_string(const char *s)
 #define kh_put(name, h, k, r) kh_put_##name(h, k, r)
 #define kh_get(name, h, k) kh_get_##name(h, k)
 #define kh_del(name, h, k) kh_del_##name(h, k)
-
+//一些操作,这里h应该就是hash的结构
 #define kh_exist(h, x) (!__ac_iseither((h)->flags, (x)))
 #define kh_key(h, x) ((h)->keys[x])
 #define kh_val(h, x) ((h)->vals[x])
 #define kh_value(h, x) ((h)->vals[x])
 #define kh_begin(h) (khint_t)(0)
-#define kh_end(h) ((h)->n_buckets)
+#define kh_end(h) ((h)->n_buckets) //返回hash桶的数量,用于查询
 #define kh_size(h) ((h)->size)
 #define kh_n_buckets(h) ((h)->n_buckets)
 
 /* More conenient interfaces */
-
+//一些更加方便的接口,一些简单的借口,指向一个统一的复杂接口
+//C中通过这些接口的调用,从而初始化上面的宏
 #define KHASH_SET_INIT_INT(name)                                        \
     KHASH_INIT(name, uint32_t, char, 0, kh_int_hash_func, kh_int_hash_equal)
 
@@ -306,11 +307,11 @@ static inline khint_t __ac_X31_hash_string(const char *s)
 #define KHASH_MAP_INIT_INT64(name, khval_t)                             \
     KHASH_INIT(name, uint64_t, khval_t, 1, kh_int64_hash_func, kh_int64_hash_equal)
 
-typedef const char *kh_cstr_t;
+typedef const char *kh_cstr_t; //这个应该是指向字符串的char指针 即 后面又_STR后缀的
 #define KHASH_SET_INIT_STR(name)                                        \
     KHASH_INIT(name, kh_cstr_t, char, 0, kh_str_hash_func, kh_str_hash_equal)
 
 #define KHASH_MAP_INIT_STR(name, khval_t)                               \
     KHASH_INIT(name, kh_cstr_t, khval_t, 1, kh_str_hash_func, kh_str_hash_equal)
-
+	//有 _MAP_的  表示kh_is_map为1
 #endif /* __AC_KHASH_H */

@@ -31,7 +31,7 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
-#include "khash.h"
+#include "khash.h" // aflfast 添加的
 
 #include <stdio.h>
 #include <unistd.h>
@@ -57,16 +57,25 @@
 #include <sys/ioctl.h>
 #include <sys/file.h>
 
+#ifdef XIAOSA
+
+	#include <sys/ipc.h>
+
+#endif
+
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
 #  include <sys/sysctl.h>
 #endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
 
 /* For systems that have sched_setaffinity; right now just Linux, but one
    can hope... */
+//目前只在linux上实现fast
 
 #ifdef __linux__
 #  define HAVE_AFFINITY 1
 #endif /* __linux__ */
+//yyy
+#  define HAVE_AFFINITY 1
 
 /* A toggle to export some variables when building as a library. Not very
    useful for the general public. */
@@ -142,13 +151,22 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
+#ifdef XIAOSA
+static	u32* virgin_counts;    /*SHM to save the execution number of the each tuple*/
+#endif
+
+
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
-
+		//这个数组也是新的,这个数组保存了tuple的随机性,静态初始值是0
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 static s32 shm_id;                    /* ID of the SHM region             */
+
+#ifdef XIAOSA
+static	s32	shm_id_virgin_counts;    /* id of SHM, to save the execution number of the each tuple*/
+#endif
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -165,11 +183,20 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            pending_favored,           /* Pending favored paths            */
            cur_skipped_paths,         /* Abandoned inputs in cur cycle    */
            cur_depth,                 /* Current path depth               */
-           max_depth,                 /* Max path depth                   */
+           max_depth,                 /* Max path depth   //记录了测试用例最长代数 */
            useless_at_start,          /* Number of useless starting paths */
            var_byte_count,            /* Bitmap bytes with var behavior   */
            current_entry,             /* Current queue entry ID           */
            havoc_div = 1;             /* Cycle count divisor for havoc    */
+
+#ifdef XIAOSA
+
+	static u32 	last_big_cycle_case_num, /*the number of the testcase in the queue catalog befor the last big cycle*/
+			add_case_num_last_big_cycle, /*the add number of the testcase in the queue catalog during the last big cycle*/
+
+			last_big_cycle_crash_num, /*the number of the testcase in the crash catalog befor the last big cycle*/
+			add_crash_num_last_big_cycle; /*the add number of the testcase in the crash catalog during the last big cycle*/
+#endif
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
            unique_crashes,            /* Crashes with unique signatures   */
@@ -188,6 +215,13 @@ EXP_ST u64 total_crashes,             /* Total number of crashes          */
            bytes_trim_out,            /* Bytes coming outa the trimmer    */
            blocks_eff_total,          /* Blocks subject to effector maps  */
            blocks_eff_select;         /* Blocks selected as fuzzable      */
+
+#ifdef XIAOSA
+		u64	big_cycle_start_time;  /*the start time of every big cycle*/ //in second level
+		u64	big_cycle_stop_time;   /*the stop time of every big cycle*/
+		u64 time_of_big_cycle;	/*the  time of every big cycle*/
+#endif
+
 
 static u32 subseq_hangs;              /* Number of hangs in a row         */
 
@@ -242,7 +276,7 @@ struct queue_entry {
       fs_redundant;                   /* Marked as redundant in the fs?   */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
-      fuzz_level,                     /* Number of fuzzing iterations     */
+      fuzz_level,                     /* Number of fuzzing iterations     */ //被fuzz过的次数吗，文章中的s(i)
       exec_cksum;                     /* Checksum of the execution trace  */
 
   u64 exec_us,                        /* Execution time (us)              */
@@ -254,6 +288,19 @@ struct queue_entry {
 
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100;       /* 100 elements ahead               */
+
+  #ifdef XIAOSA
+	u32 parent_id; /* the parent test case id*/
+	u32 self_id; /* the self test case id*/
+	u8*	change_op; /* mark the change operate*/
+	u32 nm_child; /* count the child number*/
+	u32 nm_crash_child; /* count the crash child number*/
+	u8* fuzz_one_time; /*the time of function of fuzzone, in the level of second*/
+	u8 	in_top_rate; /*to mark the testcase is in the top_rate*/
+	u8 	has_in_trace_plot;   /*to mark if it has been save in plot file*/
+	u8 	kill_signal; /*save the signal value if it has, 0 means no*/
+  #endif
+
 };
 
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
@@ -325,19 +372,19 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
-static u32 next_p2(u32 val);
+static u32 next_p2(u32 val);//这个也是声明
+//这里都是声明为32位的
+KHASH_MAP_INIT_INT(32,u32) //yyy 在这里调用宏,从而声明了宏中定义的函数,后面才可以使用
+khash_t(32) *cksum2fuzz; //这里是声明了结构指针,kh_32_t,在main函数开头初始化
 
-KHASH_MAP_INIT_INT(32,u32)
-khash_t(32) *cksum2fuzz;
-
-static u32 getFuzz(u32 key_cksum){
-
-  khiter_t k = kh_get(32, cksum2fuzz, key_cksum);
-
-  if (k != kh_end(cksum2fuzz)){
-    return kh_value(cksum2fuzz, k);
+static u32 getFuzz(u32 key_cksum){ //参数是轨迹的哈希值 这个函数的作用是?
+		//可能是这条路径被执行的次数吧?? kh_get返回的可能是n_buckets or i or 0
+  khiter_t k = kh_get(32, cksum2fuzz, key_cksum); //第一个参数可能是位数，第二个参数是一个指向执行结构的指针，第三个参数是轨迹哈希值
+  //哈希表查询
+  if (k != kh_end(cksum2fuzz)){ //kh_end 返回hash桶的数量
+    return kh_value(cksum2fuzz, k); //第一个参数指向struct结构,第二个参数表示vals数组的index,返回vals中对应index的值
   } else {
-    return 0;
+    return 0; //表示没有这个hash桶
   }
 }
 
@@ -415,10 +462,10 @@ static void shuffle_ptrs(void** ptrs, u32 cnt) {
    can be found. Assumes an upper bound of 4k CPUs. */
 
 static void bind_to_free_cpu(void) {
-
+	//应该是处理cpu方面的内容
   DIR* d;
   struct dirent* de;
-  cpu_set_t c;
+  cpu_set_t c; // cpu_set_t是什么类型
 
   u8 cpu_used[4096] = { 0 };
   u32 i;
@@ -767,6 +814,12 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
   u8* fn;
   s32 fd;
 
+#ifdef XIAOSA
+	u8 * tmpy;
+	s32 fdy;
+	s32 ylen;
+#endif
+
   if (state == q->fs_redundant) return;
 
   q->fs_redundant = state;
@@ -780,7 +833,45 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
     if (fd < 0) PFATAL("Unable to create '%s'", fn);
     close(fd);
 
+#ifdef XIAOSA
+		//open the file
+		tmpy = alloc_printf("%s/redundant_edges",out_dir);
+		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600);
+		if (fdy < 0)
+			PFATAL("Unable to create '%s'",tmpy);
+		ck_free(tmpy);
+		//write something to the file
+		tmpy = strrchr(q->fname,'/'); //表示文件名
+		tmpy = alloc_printf(
+				"%-54s is not favorated, and its bitmapsize is %-6u \n",
+				tmpy + 1,q->bitmap_size);
+		ylen = snprintf(NULL,0, "%s",tmpy);
+		ck_write(fdy,tmpy,ylen,"redundant_edges");
+		ck_free(tmpy);
+		close(fdy);
+
+#endif
+
   } else {
+
+#ifdef XIAOSA
+		//open the file
+		tmpy = alloc_printf("%s/redundant_resume",out_dir);
+		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600);
+		if (fdy < 0)
+			PFATAL("Unable to create '%s'",tmpy);
+		ck_free(tmpy);
+
+		tmpy =
+				alloc_printf(
+						"%s favor again, and its bit_map size is %u\n",
+						q->fname,q->bitmap_size);
+
+		ylen = snprintf(NULL,0,"%s",tmpy);
+		ck_write(fdy,tmpy,ylen,"redundant_resume");
+		ck_free(tmpy);
+		close(fdy);
+#endif
 
     if (unlink(fn)) PFATAL("Unable to remove '%s'", fn);
 
@@ -799,7 +890,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
   q->fname        = fname;
   q->len          = len;
-  q->depth        = cur_depth + 1;
+  q->depth        = cur_depth + 1;// 初始测试用例为1,生成一个后加1,表示第几代的测试用例
   q->passed_det   = passed_det;
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -839,6 +930,10 @@ EXP_ST void destroy_queue(void) {
     n = q->next;
     ck_free(q->fname);
     ck_free(q->trace_mini);
+#ifdef XIAOSA
+		ck_free(q->change_op);
+		ck_free(q->fuzz_one_time);
+#endif
     ck_free(q);
     q = n;
 
@@ -895,7 +990,7 @@ EXP_ST void read_bitmap(u8* fname) {
    This function is called after every exec() on a fairly large buffer, so
    it needs to be fast. We do this in 32-bit and 64-bit flavors. */
 
-static inline u8 has_new_bits(u8* virgin_map) {
+static inline u8 has_new_bits(u8* virgin_map) {  //trace_bits和参数指向的总路径比较
 
 #ifdef __x86_64__
 
@@ -1145,7 +1240,7 @@ static const u8 count_class_lookup8[256] = {
 
 };
 
-static u16 count_class_lookup16[65536];
+static u16 count_class_lookup16[65536]; //这个用来归一化bucket机制
 
 
 static void init_count_class16(void) {
@@ -1221,6 +1316,9 @@ static inline void classify_counts(u32* mem) {
 static void remove_shm(void) {
 
   shmctl(shm_id, IPC_RMID, NULL);
+#ifdef XIAOSA
+	shmctl(shm_id_virgin_counts,IPC_RMID,NULL);
+#endif
 
 }
 
@@ -1243,7 +1341,7 @@ static void minimize_bits(u8* dst, u8* src) {
 }
 
 
-/* When we bump into a new path, we call this to see if the path appears
+/* When we bump into（偶然遇见） a new path, we call this to see if the path appears
    more "favorable" than any of the existing ones. The purpose of the
    "favorables" is to have a minimal set of paths that trigger all the bits
    seen in the bitmap so far, and focus on fuzzing them at the expense of
@@ -1254,28 +1352,28 @@ static void minimize_bits(u8* dst, u8* src) {
    contender, or if the contender has a more favorable speed x size factor. */
 
 
-static void update_bitmap_score(struct queue_entry* q) {
+static void update_bitmap_score(struct queue_entry* q) { //只在在trim_case和calibrate_case函数中调用
 
   u32 i;
-  u32 fuzz_p2      = next_p2 (getFuzz(q->exec_cksum));
-  u64 fav_factor = q->exec_us * q->len;
+  u32 fuzz_p2      = next_p2 (getFuzz(q->exec_cksum));//当前测试用例的执行次数
+  u64 fav_factor = q->exec_us * q->len; //判断标准没有变
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
 
-  for (i = 0; i < MAP_SIZE; i++)
+  for (i = 0; i < MAP_SIZE; i++)	//这里是为了维护出一个最小测试用力集合, 判断是否要将当前的测试后用例添加到top_rate数组中去.
+	  //遍历这个测试用例的每个元组关系,即每个tuple都要被运行到,这个很重要
+    if (trace_bits[i]) {   //确保每个元祖所指向的测试用例,其路劲执行次数是最少的. 保证所有tuple都被运行到,但是不一定所有路径都被运行到
 
-    if (trace_bits[i]) {
-
-       if (top_rated[i]) {
-
-         u32 top_rated_fuzz_p2    = next_p2 (getFuzz(top_rated[i]->exec_cksum));
-         u64 top_rated_fav_factor = top_rated[i]->exec_us * top_rated[i]->len;
-
-         if (fuzz_p2 > top_rated_fuzz_p2) continue;
+       if (top_rated[i]) { //所有运行该tuple的测试用例中,选择路径执行次数最少的.(更改要在各个group中选择路径执行次数最少的)
+    	 //对每个存在的元祖关系进行判断, 保留路劲执行次数少的测试用例, 在归一化维度上考察
+         u32 top_rated_fuzz_p2    = next_p2 (getFuzz(top_rated[i]->exec_cksum)); //原来top_rated[i]测试用例的归一化执行次数
+         u64 top_rated_fav_factor = top_rated[i]->exec_us * top_rated[i]->len; //最小测试用例集合中当前tuple的一个标准
+         //选择测试用例对应路径执行次数较少的测试用例(每个tuple对应很多的测试用例)
+         if (fuzz_p2 > top_rated_fuzz_p2) continue; //表示当前测试用例执行的次数比top_rate数组中对应测试用例的执行次数多,不收集
          else if (fuzz_p2 == top_rated_fuzz_p2) {
-
-           if (fav_factor > top_rated_fav_factor) continue;
+        	 	//如果执行次数一样,再比较准则
+           if (fav_factor > top_rated_fav_factor) continue; //表示当前测试用例的标准值较差
 
          }
 
@@ -1283,17 +1381,27 @@ static void update_bitmap_score(struct queue_entry* q) {
             previous winner, discard its trace_bits[] if necessary. */
 
          if (!--top_rated[i]->tc_ref) {
-           ck_free(top_rated[i]->trace_mini);
-           top_rated[i]->trace_mini = 0;
+#ifndef XIAOSA
+					//原来是有的
+					ck_free(top_rated [ i ]->trace_mini);  //表示这个测试用例没有被引用了
+					top_rated [ i ]->trace_mini = 0;
+#endif
+
+#ifdef XIAOSA
+					q->in_top_rate = 0;
+#endif
          }
 
        }
 
        /* Insert ourselves as the new winner. */
-
+       //走到这里,说明当前测试用例较好(或者这个元组没有出现过) ,加入到top_rate数组中
        top_rated[i] = q;
        q->tc_ref++;
 
+#ifdef XIAOSA
+			q->in_top_rate = 1;
+#endif
        if (!q->trace_mini) {
          q->trace_mini = ck_alloc(MAP_SIZE >> 3);
          minimize_bits(q->trace_mini, trace_bits);
@@ -1301,8 +1409,17 @@ static void update_bitmap_score(struct queue_entry* q) {
 
        score_changed = 1;
 
-     }
-
+     }//end for cycle
+#ifdef XIAOSA
+	//mayby the testcase is not good ,so his trace_mini is not marked
+	//heren mark it
+	if (!q->trace_mini)
+	{
+		q->trace_mini = ck_alloc(MAP_SIZE >> 3); //分配一个8192个字节,每位对应trace_bit的一个字节
+		minimize_bits(q->trace_mini,trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
+		q->in_top_rate = 0;
+	}
+#endif
 }
 
 
@@ -1350,7 +1467,7 @@ static void cull_queue(void) {
 
       top_rated[i]->favored = 1;
       queued_favored++;
-
+      //修改了 这里使用了 fuzz_level变量这个判断,就是表示没有被fuzz过,和原来的was_fuzzed类似
       if (top_rated[i]->fuzz_level == 0) pending_favored++;
 
     }
@@ -1396,6 +1513,44 @@ EXP_ST void setup_shm(void) {
   trace_bits = shmat(shm_id, NULL, 0);
   
   if (!trace_bits) PFATAL("shmat() failed");
+
+#ifdef XIAOSA
+//#if 0
+	//creat a shm to count the tuple execution number
+	u8* shm_str_y;
+//	key_t key;
+//
+//	int fdy=0;
+//	remove("/tmp/afl-shm/virgin_counts");
+//	fdy=open("/tmp/afl-shm/virgin_counts",O_WRONLY | O_CREAT | O_EXCL,0600);
+//	if (fdy < 0)PFATAL("Unable to create ");
+//
+//	key = ftok("/tmp/afl-shm/virgin_counts",2); //这里x是子序号,自定义的,必须存在这个文件.
+//	if (key == -1)
+//	{
+//		printf("ftok error:%s\n",strerror(errno));
+//		PFATAL("ftok() failed");
+//	}
+	//65536 long, and the style of the element is u32
+	//shm_id_virgin_counts = shmget(key,MAP_SIZE,IPC_CREAT | IPC_EXCL | 0600); //IPC_PRIVATE也是一种方法,便于父子进程通信
+	shm_id_virgin_counts = shmget(IPC_PRIVATE,MAP_SIZE*4,IPC_CREAT | IPC_EXCL | 0600);
+	if (shm_id_virgin_counts < 0)
+		PFATAL("shmget() failed");
+	//在创建共享内存的时候,就声明了删除共享内存的函数
+	atexit(remove_shm);  //atexit注册终止函数,remove_shm是函数名,ok
+
+	shm_str_y = alloc_printf("%d",shm_id_virgin_counts);  //shm_id转化成字符串
+
+	if (!dumb_mode)
+		setenv(VIRGIN_COUNTS,shm_str_y,1); //在插桩模式下增加环境变量,通过环境变量告诉子进程qemu
+
+	ck_free(shm_str_y);
+
+	virgin_counts = shmat(shm_id_virgin_counts,NULL,SHM_RDONLY); //afl是只读模式,SHM_RDONLY表示只读模式
+
+	if (!virgin_counts)
+		PFATAL("128 kb shmat() failed");
+#endif
 
 }
 
@@ -2443,7 +2598,7 @@ static u8 run_target(char** argv) {
 
   setitimer(ITIMER_REAL, &it, NULL);
 
-  total_execs++;
+  total_execs++; //每run一次,就加1
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
@@ -2556,8 +2711,8 @@ static void show_stats(void);
 static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
                          u32 handicap, u8 from_queue) {
 
-  static u8 first_trace[MAP_SIZE];
-
+  static u8 first_trace[MAP_SIZE]; //这是新的,保存了calibration阶段的执行轨迹
+  	  	  	  	  	  	  	  	  	  //这个数组用来判断tuple的随机性
   u8  fault = 0, new_bits = 0, var_detected = 0,
       first_run = (q->exec_cksum == 0);
 
@@ -2570,21 +2725,21 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
      trying to calibrate already-added finds. This helps avoid trouble due
      to intermittent latency. */
 
-  if (!from_queue || resuming_fuzz)
+  if (!from_queue || resuming_fuzz)   //这里本来就有
     exec_tmout = MAX(exec_tmout + CAL_TMOUT_ADD,
                      exec_tmout * CAL_TMOUT_PERC / 100);
 
   q->cal_failed++;
 
   stage_name = "calibration";
-  stage_max  = CAL_CYCLES;
+  stage_max  = CAL_CYCLES; //这里没有考虑随机性程序,次数为8
 
   /* Make sure the forkserver is up before we do anything, and let's not
      count its spin-up time toward binary calibration. */
 
   if (dumb_mode != 1 && !no_forkserver && !forksrv_pid)
     init_forkserver(argv);
-
+  //下面这个是新的,保存第一次,将calibration阶段的执行轨迹保存起来
   if (q->exec_cksum) memcpy(first_trace, trace_bits, MAP_SIZE);
 
   start_us = get_cur_time_us();
@@ -2616,15 +2771,15 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       u8 hnb = has_new_bits(virgin_bits);
       if (hnb > new_bits) new_bits = hnb;
 
-      if (q->exec_cksum) {
-
+      if (q->exec_cksum) { //另外一种方法考虑随机性
+    	  //这个判断是新加的
         u32 i;
 
         for (i = 0; i < MAP_SIZE; i++) {
-
+        	//这个数组保存了tuple的随机性,初始值是0
           if (!var_bytes[i] && first_trace[i] != trace_bits[i]) {
-
-            var_bytes[i] = 1;
+        	  //判断tuple的随机性
+            var_bytes[i] = 1; //赋值为1 表示这个tuple和随机性有关系
             stage_max    = CAL_CYCLES_LONG;
 
           }
@@ -2636,7 +2791,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       } else {
 
         q->exec_cksum = cksum;
-        memcpy(first_trace, trace_bits, MAP_SIZE);
+        memcpy(first_trace, trace_bits, MAP_SIZE); //赋值为新的执行轨迹
 
       }
 
@@ -2654,13 +2809,13 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
-  q->handicap    = handicap;
+  q->handicap    = handicap;//performdry中为0,表示还没有开始
   q->cal_failed  = 0;
 
   total_bitmap_size += q->bitmap_size;
   total_bitmap_entries++;
 
-  update_bitmap_score(q);
+  update_bitmap_score(q);//构造最小测试用例集合的材料:top_rate数组
 
   /* If this case didn't result in new output from the instrumentation, tell
      parent. This is a non-critical problem, but something to warn the user
@@ -3141,17 +3296,28 @@ static void write_crash_readme(void) {
 
 static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
-  u8  *fn = "";
+	u8  *fn = "";
+#ifdef XIAOSA
+	u8* tmpy = "";
+	s32 fdy;
+
+	//for cycle
+	u32 i = 0;
+	u32 j = 0;
+
+	//for the len of the string
+	s32 ylen;
+#endif
   u8  hnb;
   s32 fd;
   u8  keeping = 0, res;
 
-  /* Update path frequency. */
+  /* Update path frequency. */ //不管是否是新的路径,先记录一下执行路径．将执行路径记录到hash表中
   khiter_t k;
   u32 key_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-  k = kh_get(32, cksum2fuzz, key_cksum);
-  if (k != kh_end(cksum2fuzz)){
-    kh_value(cksum2fuzz, k) ++;
+  k = kh_get(32, cksum2fuzz, key_cksum); //得到hash桶的index值,问题,怎么增加hash桶的数量
+  if (k != kh_end(cksum2fuzz)){ //表示该路径出现过,则增加一次执行次数
+    kh_value(cksum2fuzz, k) ++; //这里,即vals[k]++,可能是记录了路劲次数
   }
 
   if (fault == crash_mode) {
@@ -3185,9 +3351,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     queue_top->exec_cksum = key_cksum;
 
     int ret;
-    if (k == kh_end (cksum2fuzz)) {
-      k = kh_put (32, cksum2fuzz, key_cksum, &ret);
-      kh_value (cksum2fuzz, k) = 1;
+    if (k == kh_end (cksum2fuzz)) {//表示有新的路径出现
+      k = kh_put (32, cksum2fuzz, key_cksum, &ret); //增加hash桶的数量
+      kh_value (cksum2fuzz, k) = 1; //设置第一次执行次数为1
     }
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
@@ -3203,6 +3369,83 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     ck_write(fd, mem, len, fn);
     close(fd);
 
+
+#ifdef XIAOSA
+		//保存新的测试用例的基本块地址跳跃信息
+		//这一部分可以写到minimize_bits函数里
+
+		//先保存总的信息,方便查看
+		tmpy = alloc_printf("%s/queue_trace_mini/total",out_dir);
+		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND ,0600);
+		if (fdy < 0)
+			PFATAL("Unable to create '%s'",tmpy);
+		ck_free(tmpy);
+
+		tmpy =
+				alloc_printf(
+						"id:%06u %s is in the top_rate, block number is:%-6u,its parent is id:%06d\n",
+						queued_paths - 1,queue_top->in_top_rate ? "   " : "not",
+						queue_top->bitmap_size,current_entry);
+		ylen = snprintf(NULL,0,"%s",tmpy);
+		write(fdy,tmpy,ylen);
+		ck_free(tmpy);
+		close(fdy);
+
+#if 1
+		//保存每个测试用例的路径到一个单独文件
+		tmpy = alloc_printf("%s/queue_trace_mini/%u",out_dir,queued_paths - 1); //前面add_to_queue使得queued_paths+1,这里-1保持id一致
+		fdy = open(tmpy,O_WRONLY | O_CREAT | O_EXCL,0600);
+		if (fdy < 0)
+			PFATAL("Unable to create '%s'",tmpy);
+		ck_free(tmpy);
+
+
+		if (queue_top->trace_mini != 0) //这里为0,就是表示没有进入top_rate数组  xiaosa在update函数中修改了,所有的都记录
+		{
+
+			while (i < MAP_SIZE)
+			{ //65536次循环,16位11
+				if (queue_top->trace_mini [ i >> 3 ] & 1 << (i & 7))
+				{	//即该基本被执行
+					/*if ((j & 15) == 0 && (j != 0))
+						write(fd,"\n",1);*/
+					tmpy = alloc_printf("%-6u\n",i);
+					ylen = snprintf(NULL,0,"%s",tmpy);
+					write(fdy,tmpy,ylen);	//保存新的测试用例
+					ck_free(tmpy);
+					j++;
+				}
+				i++;
+			}
+		}
+#endif
+		close(fdy);
+
+#endif
+
+
+#ifdef XIAOSA
+		//添加配置信息
+		queue_cur->nm_child++; // child number add 1, not include crash
+		queue_top->change_op = alloc_printf("%s",describe_op(hnb));
+		queue_top->parent_id = current_entry; //
+		queue_top->self_id = queued_paths - 1; //
+
+		//save some 测试用例变异的递进关系 information in the output catalog
+		// generate the string of target file
+		tmpy = alloc_printf("%s/test_add.plot",out_dir);
+		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+		if (fdy < 0)
+			PFATAL("Unable to create '%s'",tmpy);
+		ck_free(tmpy);
+
+		//fn_xs = alloc_printf("	%d->%d[label=\"%s\"];\n",queue_top->parent_id,queue_top->self_id, queue_top->change_op);
+		tmpy = alloc_printf("	%u->%u;\n",queue_cur->self_id,queue_top->self_id);
+		ck_write(fdy,tmpy,strlen(tmpy),"test_add.plot");
+		ck_free(tmpy);
+
+		close(fdy);
+#endif
     keeping = 1;
 
   }
@@ -3262,7 +3505,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       if (!dumb_mode) {
 
 #ifdef __x86_64__
-        simplify_trace((u64*)trace_bits);
+		simplify_trace((u64*)trace_bits);//变成1或者128
 #else
         simplify_trace((u32*)trace_bits);
 #endif /* ^__x86_64__ */
@@ -3289,6 +3532,91 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
       last_crash_time = get_cur_time();
       last_crash_execs = total_execs;
+
+#ifdef XIAOSA
+			//save some 测试用例变异递进关系 information from crash catalog
+			// generate the string of target file
+			tmpy = alloc_printf("%s/test_add.plot",out_dir);
+			fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+			if (fdy < 0)
+				PFATAL("Unable to create '%s'",tmpy);
+			ck_free(tmpy);
+
+			// add the crash node
+			tmpy = alloc_printf(
+					"	crash%llu[style = filled,color=burlywood2];\n",
+					unique_crashes-1);
+			ck_write(fdy,tmpy,strlen(tmpy),"test_add.plot");
+			ck_free(tmpy);
+
+			//add the edge  o the crash testcase
+			tmpy = alloc_printf("	%u->crash%llu[color=red];\n",
+					queue_cur->self_id,unique_crashes-1);
+			ck_write(fdy,tmpy,strlen(tmpy),"test_add.plot");
+			ck_free(tmpy);
+
+			close(fdy);
+#endif
+
+
+#ifdef XIAOSA
+			//-----------------------------------------------------
+			//保存crash测试用例的基本块地址跳跃信息
+			//这一部分可以写到minimize_bits函数里
+			//每个crash测试用例的执行轨迹信息保存到一个单独文件
+			queue_cur->nm_crash_child++;
+			tmpy = alloc_printf("%s/crash_trace_mini/crash:%llu",out_dir,
+					unique_crashes - 1);
+			fdy = open(tmpy,O_WRONLY | O_CREAT | O_EXCL,0600);
+			if (fdy < 0)
+				PFATAL("Unable to create '%s'",tmpy);
+			ck_free(tmpy);
+
+			////
+			//这里可以改成64位操作
+			i = 0 ; //65536次
+			while (i++ < MAP_SIZE)
+			{
+				if (trace_bits [ i ] == 128)
+				{
+					//save the relation of the tuple
+					tmpy = alloc_printf("%-6u\n",i);
+					ylen = snprintf(NULL,0,"%s",tmpy);
+					write(fdy,tmpy,ylen);	//保存新的测试用例
+					ck_free(tmpy);
+				}
+
+			}
+			close(fdy);
+
+#if 0
+			//-----------------------------------------------------
+			//save the execution number of the tuple that in crash testcase
+			//这里是crash执行轨迹中元组的执行数量
+			u8 * tmpy = "";
+			tmpy = alloc_printf("%s/crash_trace_mini/%llu_executed_number",out_dir,
+								unique_crashes - 1);
+			remove(tmpy);
+			fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600);
+			if (fdy < 0)
+				PFATAL("Unable to create '%s'",tmpy);
+			ck_free(tmpy);
+
+			for (i = 0; i < MAP_SIZE; i++)
+			{
+				if (trace_bits [ i ]== 128)
+				{
+					tmpy = alloc_printf("NO.%d is executed %-20u times;\n",i,
+							virgin_counts [ i ]);
+					ck_write(fdy,tmpy,strlen(tmpy),"each crash executed number");
+					ck_free(tmpy);
+				}
+
+			}
+			close(fdy);
+#endif
+
+#endif
 
       break;
 
@@ -3749,6 +4077,19 @@ static void maybe_delete_out_dir(void) {
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
+#ifdef XIAOSA
+	//to remove the queue_trace_mini catalog
+	fn = alloc_printf("%s/queue_trace_mini",out_dir);
+	if (delete_files(fn,NULL))
+		goto dir_cleanup_failed;
+	ck_free(fn);
+
+	//to remove the crash_trace_mini catalog
+	fn = alloc_printf("%s/crash_trace_mini",out_dir);
+	if (delete_files(fn,NULL))
+		goto dir_cleanup_failed;
+	ck_free(fn);
+#endif
   /* All right, let's do <out_dir>/crashes/id:* and <out_dir>/hangs/id:*. */
 
   if (!in_place_resume) {
@@ -3984,8 +4325,8 @@ static void show_stats(void) {
 
     SAYF(cBRI "Your terminal is too small to display the UI.\n"
          "Please resize terminal window to at least 80x25.\n" cRST);
-
-    return;
+    //yyy
+    //return;
 
   }
 
@@ -4099,8 +4440,10 @@ static void show_stats(void) {
 
   SAYF(bV bSTOP "  now processing : " cRST "%-17s " bSTG bV bSTOP, tmp);
 
-  sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size) * 
-          100 / MAP_SIZE, t_byte_ratio);
+  //yyy
+  //sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size) * 100 / MAP_SIZE, t_byte_ratio);
+
+  sprintf(tmp,"%s (%0.02f%%)",DI(t_bytes),t_byte_ratio);
 
   SAYF("    map density : %s%-21s " bSTG bV "\n", t_byte_ratio > 70 ? cLRD : 
        ((t_bytes < 200 && !dumb_mode) ? cPIN : cRST), tmp);
@@ -4440,11 +4783,11 @@ static void show_init_stats(void) {
 
 /* Find first power of two greater or equal to val. */
 
-static u32 next_p2(u32 val) {
+static u32 next_p2(u32 val) { //可能是一种归一处理，向上归一 比如630 归一到1024
 
   u32 ret = 1;
-  while (val > ret) ret <<= 1;
-  return ret;
+  while (val > ret) ret <<= 1; //val 0 表示没有这个hash桶
+  return ret; //0次和1次  返回向上取2^n的值 //至少为1
 
 } 
 
@@ -4474,7 +4817,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
   /* Select initial chunk len, starting with large steps. */
 
-  len_p2 = next_p2(q->len);
+  len_p2 = next_p2(q->len); //这里的next_p2函数是初始的
 
   remove_len = MAX(len_p2 / TRIM_START_STEPS, TRIM_MIN_BYTES);
 
@@ -4495,8 +4838,8 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
       u32 trim_avail = MIN(remove_len, q->len - remove_pos);
       u32 cksum;
 
-      write_with_gap(in_buf, q->len, remove_pos, trim_avail);
-
+      write_with_gap(in_buf, q->len, remove_pos, trim_avail);//cur_input中删除了trim_avail个字节的内容
+		 	 	 	 	 	 	 	 	 	 	 	 	 	 //一般是4个字节,不足4个字节时不补足4个字节
       fault = run_target(argv);
       trim_execs++;
 
@@ -4669,7 +5012,7 @@ static u32 calculate_score(struct queue_entry* q) {
 
   u32 avg_exec_us = total_cal_us / total_cal_cycles;
   u32 avg_bitmap_size = total_bitmap_size / total_bitmap_entries;
-  u32 perf_score = 100;
+  u32 perf_score = 100;//初始值是100
 
   /* Adjust score based on execution speed of this path, compared to the
      global average. Multiplier ranges from 0.1x to 3x. Fast inputs are
@@ -4723,37 +5066,39 @@ static u32 calculate_score(struct queue_entry* q) {
 
   }
 
-  u32 fuzz = getFuzz(q->exec_cksum);
+  //前面是一样的，这里开始不一样了，这里实现了power schedule
+  u32 fuzz = getFuzz(q->exec_cksum); //这条路径的归一化执行次数,根据执行路径 读取执行次数
   u32 fuzz_total, n_paths, fuzz_mu;
-  u32 factor = 1;
+  u32 factor = 1;//这个参数
   switch (schedule) {
 
     case EXPLORE: 
-      break;
+      break;		//这里令β为为α(i),即afl的情况
 
     case EXPLOIT:
-      factor = MAX_FACTOR;
+      factor = MAX_FACTOR;//采取固定值,最大情况,AFL采取了1
       break;
 
     case COE:
-      fuzz_total = 0;
-      n_paths = 0;
+      fuzz_total = 0;//所有路径的总共执行次数
+      n_paths = 0;//路径数量
 
       struct queue_entry *queue_it = queue;	
+      //记录每一种路径被执行的次数以及路径的数量
       while (queue_it) {
         fuzz_total += getFuzz(queue_it->exec_cksum);
         n_paths ++;
         queue_it = queue_it -> next;
       }
 
-      fuzz_mu = fuzz_total / n_paths;
+      fuzz_mu = fuzz_total / n_paths;//路径的平均执行次数(包含重复部分)
       if (fuzz <= fuzz_mu) {
         if (q->fuzz_level < 16)
           factor = ((u32) (1 << q->fuzz_level));
         else 
-          factor = MAX_FACTOR;
+          factor = MAX_FACTOR; //系数最大值为MAX_FACTOR,轮数太多也不行了
       } else {
-        factor = 0;
+        factor = 0;//路径执行次数大于平均执行次数
       }
       break;
     
@@ -4776,12 +5121,12 @@ static u32 calculate_score(struct queue_entry* q) {
       PFATAL ("Unkown Power Schedule");
   }
   if (factor > MAX_FACTOR) 
-    factor = MAX_FACTOR;
+    factor = MAX_FACTOR;//系数最大不超过MAX_FACTOR 32?
 
   perf_score *= factor / POWER_BETA;
 
   /* Make sure that we don't go over limit. */
-
+  //一个最大的perf_score
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
 
   return perf_score;
@@ -4991,6 +5336,11 @@ static u8 fuzz_one(char** argv) {
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
 
+#ifdef XIAOSA
+	u8 *tmpy = "";
+	s32 fdy;
+#endif
+
 #ifdef IGNORE_FINDS
 
   /* In IGNORE_FINDS mode, skip any entries that weren't in the
@@ -5045,6 +5395,26 @@ static u8 fuzz_one(char** argv) {
   if (orig_in == MAP_FAILED) PFATAL("Unable to mmap '%s'", queue_cur->fname);
 
   close(fd);
+
+#ifdef XIAOSA
+	if (queue_cur->has_in_trace_plot == 0)
+	{
+		//open the trace_plot file
+		tmpy = alloc_printf("%s/test_add.plot",out_dir);
+		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+		if (fdy < 0)
+			PFATAL("Unable to create '%s'",tmpy);
+		ck_free(tmpy);
+		// current test case is executed
+		tmpy = alloc_printf("	%u[shape=record];\n",queue_cur->self_id); //每次运行的测试用例都记录,但是会被多次记录
+		ck_write(fdy,tmpy,strlen(tmpy),"test_add.plot");
+		ck_free(tmpy);
+		close(fdy);
+		queue_cur->has_in_trace_plot = 1; //表示已经记录到trace_plot里了
+
+	}
+
+#endif
 
   /* We could mmap() out_buf as MAP_PRIVATE, but we end up clobbering every
      single byte anyway, so it wouldn't give us any performance or memory usage
@@ -5118,23 +5488,29 @@ static u8 fuzz_one(char** argv) {
      often to warrant the expensive deterministic stage (fuzz_level), or
      if it has gone through deterministic testing in earlier, resumed runs
      (passed_det). */
-
-  if (skip_deterministic 
+  	  //这个也是新的,perf_score代表了能量的系数
+  if (skip_deterministic  //满足一定条件后(新加的条件),跳过确定性fuzz
+		  //只有当能量足够运行确定性变异后,再运行确定性变异
+		  //当得分小于min(代数*30,havoc最大分值)时,跳过确定性变异
+		  //就是说比较低的得分,能量不够,暂时不用进行确定性变异了
      || ((!queue_cur->passed_det) 
         && perf_score < (
               queue_cur->depth * 30 <= HAVOC_MAX_MULT * 100
               ? queue_cur->depth * 30 
               : HAVOC_MAX_MULT * 100))
      || queue_cur->passed_det)
+  {
+	
     goto havoc_stage;
+  }
 
   /* Skip deterministic fuzzing if exec path checksum puts this out of scope
      for this master instance. */
-
+  //这个也是新的,这个是什么条件?
   if (master_max && (queue_cur->exec_cksum % master_max) != master_id - 1)
     goto havoc_stage;
 
-  doing_det = 1;
+  doing_det = 1; //表示开始确定性fuzz
 
   /*********************************************
    * SIMPLE BITFLIP (+dictionary construction) *
@@ -6104,9 +6480,9 @@ havoc_stage:
 
     stage_name  = "havoc";
     stage_short = "havoc";
-    stage_max   = (doing_det ? HAVOC_CYCLES_INIT : HAVOC_CYCLES) *
-                  perf_score / havoc_div / 100;
-
+    stage_max   = (doing_det ? HAVOC_CYCLES_INIT : HAVOC_CYCLES) *perf_score / havoc_div / 100; // 通过perf_score的值来控制havoc的数量
+    //经过确定性变异来的和不经过确定性变异来的基本数不一样
+    //即对HAVOC_CYCLES_INIT/HAVOC_CYCLES乘以一个系数,HAVOC_CYCLES_INIT/HAVOC_CYCLES是一个基本数
   } else {
 
     static u8 tmp[32];
@@ -6130,10 +6506,10 @@ havoc_stage:
 
   /* We essentially just do several thousand runs (depending on perf_score)
      where we take the input file and make random stacked tweaks. */
-
+  //stage_max 最小为HAVOC_MIN次,这里为16次
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
 
-    u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
+    u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));//1到256之间随机
 
     stage_cur_val = use_stacking;
  
@@ -6500,7 +6876,7 @@ havoc_stage:
     }
 
     if (common_fuzz_stuff(argv, out_buf, temp_len))
-      goto abandon_entry;
+      goto abandon_entry; //如果结束或者被挂起,就不再跑了
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */
@@ -6511,7 +6887,7 @@ havoc_stage:
 
     /* If we're finding new stuff, let's run for a bit longer, limits
        permitting. */
-
+    //如果发现了新的路径,就多跑一会
     if (queued_paths != havoc_queued) {
 
       if (perf_score <= HAVOC_MAX_MULT * 100) {
@@ -6640,7 +7016,7 @@ abandon_entry:
     if (queue_cur->favored) pending_favored--;
   }
 
-  queue_cur->fuzz_level++;
+  queue_cur->fuzz_level++;//新增加的,表示这个测试用例被fuzz_one过一次
 
   munmap(orig_in, queue_cur->len);
 
@@ -7145,6 +7521,20 @@ EXP_ST void setup_dirs_fds(void) {
   tmp = alloc_printf("%s/queue", out_dir);
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
+
+#ifdef XIAOSA
+	// mkdir  trace  catalog, to save the trace_bit of every testcase in queue catalog
+	tmp = alloc_printf("%s/queue_trace_mini",out_dir);
+	if (mkdir(tmp,0700))
+		PFATAL("Unable to create '%s'",tmp);
+	ck_free(tmp);
+
+	// mkdir  trace  catalog, to save the trace_bit of every testcase in crash catalog
+		tmp = alloc_printf("%s/crash_trace_mini",out_dir);
+		if (mkdir(tmp,0700))
+			PFATAL("Unable to create '%s'",tmp);
+		ck_free(tmp);
+#endif
 
   /* Top-level directory for queue metadata used for session
      resume and related tasks. */
@@ -7730,6 +8120,180 @@ int stricmp(char const *a, char const *b) {
 
 #ifndef AFL_LIB
 
+#ifdef XIAOSA
+//Functions by xiaosatianyu,just before the main function
+
+//save the times about the tuple execution number
+static void y_save_tuple_execution_num()
+{
+	u32 i = 0;
+	u8 * tmpy = "";
+	int fdy;
+	tmpy = alloc_printf("%s/executed_num",out_dir);
+	remove(tmpy);
+	fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600);
+	if (fdy < 0)
+		PFATAL("Unable to create '%s'",tmpy);
+	ck_free(tmpy);
+
+	tmpy = alloc_printf("all tuples that in the vigin_counts\n");
+	ck_write(fdy,tmpy,strlen(tmpy),"executed_num file");
+	ck_free(tmpy);
+
+	//这样是记录所有被执行过的基本元组关系，通过插桩的方式记录的基本块执行次数
+	for (i = 0; i < MAP_SIZE; i++)
+	{
+		if (virgin_counts [ i ] != 0)
+		{
+			tmpy = alloc_printf("NO.%-6u is executed %-20u times;\n",i,
+					virgin_counts [ i ]);
+			ck_write(fdy,tmpy,strlen(tmpy),"executed_num file");
+			ck_free(tmpy);
+		}
+
+	}
+	close(fdy);
+}
+
+//save the informaiton about the big cycle
+static void y_save_information_big_cycle()
+{
+	u8* tmpy="";
+	int fdy;
+	//记录每一次大循环的起始和结束时间,这个大循环增加的测试用例数量
+
+	//open then target file
+	tmpy = alloc_printf("%s/big_cycle_information",out_dir);
+	fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+	if (fdy < 0)
+		PFATAL("Unable to open '%s'","out_dir/big_cycle_information");
+	ck_free(tmpy);
+
+	if (queued_paths == queued_at_start)
+	{
+		//if the first
+		big_cycle_start_time = get_cur_time(); //first big cycle
+
+		//save the initial information about the queue and crash catalog
+		last_big_cycle_case_num = queued_at_start; //intial number of the testcase
+		last_big_cycle_crash_num = 0;	//intial number of the crash
+		tmpy = alloc_printf("the initial testcase number is %d.\n"
+				"the initial crash number is %d\n\n",queued_at_start,
+				last_big_cycle_crash_num);
+		ck_write(fdy,tmpy,strlen(tmpy),"big_cycle_information");
+		ck_free(tmpy);
+		close(fdy);
+	}
+	else
+	{
+		//calculate the time
+		big_cycle_stop_time = get_cur_time(); // the stop time of the big cycle
+
+		time_of_big_cycle = (big_cycle_stop_time - big_cycle_start_time) / 1000; //second level
+
+		//save the added number of the testcase in the queue and crash catalog
+		//the queue catalog
+		add_case_num_last_big_cycle = queued_paths - last_big_cycle_case_num;
+		last_big_cycle_case_num = queued_paths;
+
+		//the crash catalog
+		add_crash_num_last_big_cycle = unique_crashes
+				- last_big_cycle_crash_num;
+		last_big_cycle_crash_num = unique_crashes;
+
+		//save to the file
+		tmpy = alloc_printf(
+				"the add number of the testcase in the NO.%llu cycle is %u, "
+				"the total number of the testcase is %u\n"
+				"the add number of the crash in the NO.%llu cycle is %u, "
+				"the total number of the crash is %llu\n"
+				"the consume time is %-30s \n\n",
+				queue_cycle ,
+				add_case_num_last_big_cycle,queued_paths,
+				queue_cycle ,
+				add_crash_num_last_big_cycle,unique_crashes,
+				DTD(big_cycle_stop_time,big_cycle_start_time));
+		ck_write(fdy,tmpy,strlen(tmpy),"big_cycle_information");
+		ck_free(tmpy);
+		close(fdy);
+
+		big_cycle_start_time = big_cycle_stop_time;	//reset the start time of the next big cycle
+	}
+
+}
+
+//save the informaition when the the fuzzone function end
+//save the time and the child number
+static void y_save_fuzzone_end_each_cycle()//每个大循环
+{
+	u8* tmpy = "";
+	int fdy;
+	//记录每一次大循环的起始和结束时间,这个大循环增加的测试用例数量
+
+	//open then target file
+	//tmpy = alloc_printf("%s/fuzz_one_end_in_cycle%llu",out_dir,queue_cycle);
+	tmpy = alloc_printf("%s/fuzz_one_end",out_dir);
+	fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+	if (fdy < 0)
+		PFATAL("Unable to open '%s'","out_dir/big_cycle_information");
+	ck_free(tmpy);
+
+	tmpy =alloc_printf(
+		  "%u cycle %llu fuzzone %s,child:%u,crash:%u,bit_size:%u,%s in_top_rate,len:%u\n",
+		  queue_cur->self_id,queue_cycle,queue_cur->fuzz_one_time,queue_cur->nm_child,queue_cur->nm_crash_child,
+		  queue_cur->bitmap_size, queue_cur->in_top_rate?"":"not",queue_cur->len
+		 );
+	ck_write(fdy,tmpy,strlen(tmpy),"fuzz_one_end");
+	ck_free(tmpy);
+	close(fdy);
+
+}
+
+//when fuzzone fucntion has end, save the number of executed times for each testcase in queue
+static void y_save_each_case_execute_num(){
+	//go through all queue, read the execute times of each testcase by searching q->execum in hash table
+	//save the information to outfile catalog
+
+	u8* tmpy = "";
+	int fdy;
+
+	//remove the old file which is save the execute times of each testcase
+	tmpy = alloc_printf("%s/execute_times_testcase", out_dir);
+	remove(tmpy);
+	ck_free(tmpy);
+
+
+	struct queue_entry  *y_queue_cur=queue;
+	while(y_queue_cur)
+	{
+		u64 fuzz_times = getFuzz(y_queue_cur->exec_cksum); //当前路径的执行次数
+
+		//open the file
+		tmpy = alloc_printf("%s/execute_times_testcase", out_dir);
+		fdy = open(tmpy, O_WRONLY | O_CREAT | O_APPEND, 0600); //需要追加的模式
+		if (fdy < 0)
+			PFATAL("Unable to open '%s'", "out_dir/big_cycle_information");
+		ck_free(tmpy);
+
+		tmpy =alloc_printf("%s has executed %llu times,and it is %s\n",
+				y_queue_cur->fname,fuzz_times,y_queue_cur->favored?"favored":"not favored");
+		ck_write(fdy, tmpy, strlen(tmpy), "execute_times_testcase");
+		ck_free(tmpy);
+		close(fdy);
+
+		y_queue_cur = y_queue_cur->next;
+	}
+
+
+}
+
+#endif //end  #ifdef XIAOSA
+
+
+
+
+
+
 /* Main entry point */
 
 int main(int argc, char** argv) {
@@ -7739,19 +8303,26 @@ int main(int argc, char** argv) {
   u32 sync_interval_cnt = 0, seek_to;
   u8  *extras_dir = 0;
   u8  mem_limit_given = 0;
+
+#ifdef XIAOSA
+	u64 fuzz_start_us , fuzz_stop_us; // to remark the time of function fuzzone
+	s32 fdy; //file IO
+	u8 *tmpy = ""; ///yyy temp alloc
+#endif
+
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
   char** use_argv;
 
-  struct timeval tv;
+  struct timeval tv; //这个也是新加的吧
   struct timezone tz;
 
   /* Allocate memory for hashmaps */
-  cksum2fuzz = kh_init(32);
+  cksum2fuzz = kh_init(32); //从堆中初始化 一个结构
 
   SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>. Power schedules by <marcel.boehme@acm.org>\n");
 
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
-
+  //下面两句是新加的,用于何时?
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
@@ -7993,10 +8564,10 @@ int main(int argc, char** argv) {
 
   check_if_tty();
 
-  get_core_count();
+  get_core_count(); //根据cpu的数量进行一些说明,原来就有
 
 #ifdef HAVE_AFFINITY
-  bind_to_free_cpu();
+  bind_to_free_cpu(); // linux下可以用 cpu方面的
 #endif /* HAVE_AFFINITY */
 
   check_crash_handling();
@@ -8004,7 +8575,7 @@ int main(int argc, char** argv) {
 
   setup_post();
   setup_shm();
-  init_count_class16();
+  init_count_class16(); //the added bucket, add to the 65536
 
   setup_dirs_fds();
   read_testcases();
@@ -8029,6 +8600,49 @@ int main(int argc, char** argv) {
   else
     use_argv = argv + optind;
 
+#ifdef XIAOSA
+
+	//--------------------
+	tmpy = alloc_printf("%s/test_add.plot",out_dir);
+	remove(tmpy);
+	fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+	if (fdy < 0)
+		PFATAL("Unable to create '%s'","out_dir/test_add.plot");
+	ck_free(tmpy);
+
+	tmpy = alloc_printf("digraph graphname{\n"
+			"	node[fontsize=\"10,10\"];\n"
+			"	edge[style=\"bold\",fontsize=\"10,10\"];\n"
+			"	graph[fontname = \"Helvetica-Oblique\",\n"
+			"		size = \"100000,100000\",\n"
+			"		ratio=1.2 ];\n"); //提前写入头信息
+	ck_write(fdy,tmpy,strlen(tmpy),"test_add.plot");
+	ck_free(tmpy);
+	close(fdy);
+	//--------------------
+	//保存冗余的例子
+	tmpy = alloc_printf("%s/redundant_edges",out_dir);
+	remove(tmpy);
+	ck_free(tmpy);
+
+	//冗余恢复的例子
+	tmpy = alloc_printf("%s/redundant_resume",out_dir);
+	remove(tmpy);
+	ck_free(tmpy);
+
+	//保存每次大循环信息的文件
+	tmpy = alloc_printf("%s/big_cycle_information",out_dir);
+	remove(tmpy); //冗余恢复的例子
+	ck_free(tmpy);
+
+	//remove the old file for the function of y_save_fuzzone_end_each_cycle
+	tmpy = alloc_printf("%s/fuzz_one_end",out_dir);
+	remove(tmpy);
+	ck_free(tmpy);
+
+
+#endif
+
   perform_dry_run(use_argv);
 
   cull_queue();
@@ -8045,19 +8659,25 @@ int main(int argc, char** argv) {
   /* Woop woop woop */
 
   if (!not_on_tty) {
-    sleep(4);
-    start_time += 4000;
+#ifndef XIAOSA
+		sleep(4);
+		start_time += 4000;
+#endif
     if (stop_soon) goto stop_fuzzing;
   }
 
   while (1) {
 
     u8 skipped_fuzz;
-
+#ifdef XIAOSA
+		y_save_tuple_execution_num();
+#endif
     cull_queue();
 
     if (!queue_cur) {
-
+#ifdef XIAOSA
+			y_save_information_big_cycle(); //save the information in each big cycle
+#endif
       queue_cycle++;
       current_entry     = 0;
       cur_skipped_paths = 0;
@@ -8091,9 +8711,18 @@ int main(int argc, char** argv) {
         sync_fuzzers(use_argv);
 
     }
-
+#ifdef XIAOSA
+		fuzz_start_us = get_cur_time();
+#endif
     skipped_fuzz = fuzz_one(use_argv);
+#ifdef XIAOSA
+		fuzz_stop_us = get_cur_time();
+		queue_cur->fuzz_one_time=alloc_printf( "%s",DTD(fuzz_stop_us,fuzz_start_us));
+		y_save_fuzzone_end_each_cycle();//记录一个fuzzone的时间
+		//记录各个路径的执行次数
+		y_save_each_case_execute_num();
 
+#endif
     if (!stop_soon && sync_id && !skipped_fuzz) {
       
       if (!(sync_interval_cnt++ % SYNC_INTERVAL))
@@ -8135,11 +8764,26 @@ stop_fuzzing:
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
-  kh_destroy(32, cksum2fuzz);
+  kh_destroy(32, cksum2fuzz);//销毁
 
   alloc_report();
 
   OKF("We're done here. Have a nice day!\n");
+
+#ifdef XIAOSA
+
+	tmpy = alloc_printf("%s/test_add.plot",out_dir);
+	fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+	if (fdy < 0)
+		PFATAL("Unable to create '%s'","/tmp/trace");
+	ck_free(tmpy);
+
+	tmpy = alloc_printf("}\n");
+	ck_write(fdy,tmpy,strlen(tmpy),"%s/test_add.plot");
+	ck_free(tmpy);
+
+	close(fdy);
+#endif
 
   exit(0);
 

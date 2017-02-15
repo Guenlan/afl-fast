@@ -110,17 +110,17 @@ fi
 
 echo "[*] Uncompressing archive (this will take a while)..."
 
-rm -rf "qemu-2.3.0" || exit 1
-tar xf "$ARCHIVE" || exit 1
+#rm -rf "qemu-2.3.0" || exit 1
+#tar xf "$ARCHIVE" || exit 1
 
 echo "[+] Unpacking successful."
 
 echo "[*] Applying patches..."
 
-patch -p0 <patches/elfload.diff || exit 1
-patch -p0 <patches/cpu-exec.diff || exit 1
-patch -p0 <patches/translate-all.diff || exit 1
-patch -p0 <patches/syscall.diff || exit 1
+#patch -p0 <patches/elfload.diff || exit 1
+#patch -p0 <patches/cpu-exec.diff || exit 1
+#patch -p0 <patches/translate-all.diff || exit 1
+#patch -p0 <patches/syscall.diff || exit 1
 
 echo "[+] Patching done."
 
@@ -132,6 +132,7 @@ test "$CPU_TARGET" = "i686" && CPU_TARGET="i386"
 echo "[*] Configuring QEMU for $CPU_TARGET..."
 
 cd qemu-2.3.0 || exit 1
+make clean
 
 CFLAGS="-O3" ./configure --disable-system --enable-linux-user \
   --enable-guest-base --disable-gtk --disable-sdl --disable-vnc \
@@ -141,7 +142,7 @@ echo "[+] Configuration complete."
 
 echo "[*] Attempting to build QEMU (fingers crossed!)..."
 
-make -j8  || exit 1
+make -j4  || exit 1
 
 echo "[+] Build process successful!"
 
@@ -160,14 +161,14 @@ if [ "$ORIG_CPU_TARGET" = "" ]; then
 
   cd ..
 
-  make >/dev/null || exit 1
+  #make >/dev/null || exit 1
 
   gcc test-instr.c -o test-instr || exit 1
 
   unset AFL_INST_RATIO
 
-  echo 0 | ./afl-showmap -m none -Q -q -o .test-instr0 ./test-instr || exit 1
-  echo 1 | ./afl-showmap -m none -Q -q -o .test-instr1 ./test-instr || exit 1
+  #echo 0 | ./afl-showmap -m none -Q -q -o .test-instr0 ./test-instr || exit 1
+  #echo 1 | ./afl-showmap -m none -Q -q -o .test-instr1 ./test-instr || exit 1
 
   rm -f test-instr
 

@@ -22,6 +22,8 @@
 /* Version string: */
 
 #define VERSION             "2.33b"
+//yyy
+#define XIAOSA
 
 /******************************************************
  *                                                    *
@@ -61,7 +63,7 @@
 /* Number of calibration cycles per every new test case (and for test
    cases that show variable behavior): */
 
-#define CAL_CYCLES          8
+#define CAL_CYCLES          8  //原始的是10
 #define CAL_CYCLES_LONG     40
 
 /* Number of subsequent hangs before abandoning an input file: */
@@ -93,8 +95,8 @@
 
 /* Maximum stacking for havoc-stage tweaks. The actual value is calculated
    like this: 
-
    n = random between 1 and HAVOC_STACK_POW2
+
    stacking = 2^n
 
    In other words, the default (n = 7) produces 2, 4, 8, 16, 32, 64, or
@@ -264,6 +266,11 @@
 /* Environment variable used to pass SHM ID to the called program. */
 
 #define SHM_ENV_VAR         "__AFL_SHM_ID"
+
+//yyy
+#ifdef XIAOSA
+#define VIRGIN_COUNTS   "__AFL_SHM_ID_VIRGIN_COUNTS"
+#endif
 
 /* Other less interesting, internal-only variables. */
 
