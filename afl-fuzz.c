@@ -33,6 +33,12 @@
 #include "hash.h"
 #include "khash.h" // aflfast 添加的
 
+#ifdef DISTANCE
+	//distance
+	#include "afl-distance.h"
+#endif
+
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -207,7 +213,7 @@ EXP_ST u64 total_crashes,             /* Total number of crashes          */
            last_path_time,            /* Time for most recent path (ms)   */
            last_crash_time,           /* Time for most recent crash (ms)  */
            last_hang_time,            /* Time for most recent hang (ms)   */
-           last_crash_execs,          /* Exec counter at last crash       */
+		   last_crash_execs,          /* Exec counter at last crash       */
            queue_cycle,               /* Queue round counter              */
            cycles_wo_finds,           /* Cycles without any new paths     */
            trim_execs,                /* Execs done to trim input files   */
@@ -217,9 +223,10 @@ EXP_ST u64 total_crashes,             /* Total number of crashes          */
            blocks_eff_select;         /* Blocks selected as fuzzable      */
 
 #ifdef XIAOSA
-		u64	big_cycle_start_time;  /*the start time of every big cycle*/ //in second level
-		u64	big_cycle_stop_time;   /*the stop time of every big cycle*/
-		u64 time_of_big_cycle;	/*the  time of every big cycle*/
+		EXP_ST u64	big_cycle_start_time;  /*the start time of every big cycle*/ //in second level
+		EXP_ST u64	big_cycle_stop_time;   /*the stop time of every big cycle*/
+		EXP_ST u64 time_of_big_cycle;	/*the  time of every big cycle*/
+		EXP_ST u64 main_start_time;	 /*record the start time of fucntion main, in us*/
 #endif
 
 
@@ -261,48 +268,52 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 #endif /* HAVE_AFFINITY */
 
 static FILE* plot_file;               /* Gnuplot output file              */
+#ifdef DISTANCE
+       FILE* distance_file; /*the file to record the distance*/
+#endif
 
-struct queue_entry {
+#ifndef DISTANCE
+	struct queue_entry {
 
-  u8* fname;                          /* File name for the test case      */
-  u32 len;                            /* Input length                     */
+	  u8* fname;                          /* File name for the test case      */
+	  u32 len;                            /* Input length                     */
 
-  u8  cal_failed,                     /* Calibration failed?              */
-      trim_done,                      /* Trimmed?                         */
-      passed_det,                     /* Deterministic stages passed?     */
-      has_new_cov,                    /* Triggers new coverage?           */
-      var_behavior,                   /* Variable behavior?               */
-      favored,                        /* Currently favored?               */
-      fs_redundant;                   /* Marked as redundant in the fs?   */
+	  u8  cal_failed,                     /* Calibration failed?              */
+		  trim_done,                      /* Trimmed?                         */
+		  passed_det,                     /* Deterministic stages passed?     */
+		  has_new_cov,                    /* Triggers new coverage?           */
+		  var_behavior,                   /* Variable behavior?               */
+		  favored,                        /* Currently favored?               */
+		  fs_redundant;                   /* Marked as redundant in the fs?   */
 
-  u32 bitmap_size,                    /* Number of bits set in bitmap     */
-      fuzz_level,                     /* Number of fuzzing iterations     */ //被fuzz过的次数吗，文章中的s(i)
-      exec_cksum;                     /* Checksum of the execution trace  */
+	  u32 bitmap_size,                    /* Number of bits set in bitmap     */
+		  fuzz_level,                     /* Number of fuzzing iterations     */ //被fuzz过的次数吗，文章中的s(i)
+		  exec_cksum;                     /* Checksum of the execution trace  */
 
-  u64 exec_us,                        /* Execution time (us)              */
-      handicap,                       /* Number of queue cycles behind    */
-      depth;                          /* Path depth                       */
+	  u64 exec_us,                        /* Execution time (us)              */
+		  handicap,                       /* Number of queue cycles behind    */
+		  depth;                          /* Path depth                       */
 
-  u8* trace_mini;                     /* Trace bytes, if kept             */
-  u32 tc_ref;                         /* Trace bytes ref count            */
+	  u8* trace_mini;                     /* Trace bytes, if kept             */
+	  u32 tc_ref;                         /* Trace bytes ref count            */
 
-  struct queue_entry *next,           /* Next element, if any             */
-                     *next_100;       /* 100 elements ahead               */
+	  struct queue_entry *next,           /* Next element, if any             */
+						 *next_100;       /* 100 elements ahead               */
 
-  #ifdef XIAOSA
-	u32 parent_id; /* the parent test case id*/
-	u32 self_id; /* the self test case id*/
-	u8*	change_op; /* mark the change operate*/
-	u32 nm_child; /* count the child number*/
-	u32 nm_crash_child; /* count the crash child number*/
-	u8* fuzz_one_time; /*the time of function of fuzzone, in the level of second*/
-	u8 	in_top_rate; /*to mark the testcase is in the top_rate*/
-	u8 	has_in_trace_plot;   /*to mark if it has been save in plot file*/
-	u8 	kill_signal; /*save the signal value if it has, 0 means no*/
-  #endif
+	  #ifdef XIAOSA
+		u32 parent_id; /* the parent test case id*/
+		u32 self_id; /* the self test case id*/
+		u8*	change_op; /* mark the change operate*/
+		u32 nm_child; /* count the child number*/
+		u32 nm_crash_child; /* count the crash child number*/
+		u8* fuzz_one_time; /*the time of function of fuzzone, in the level of second*/
+		u8 	in_top_rate; /*to mark the testcase is in the top_rate*/
+		u8 	has_in_trace_plot;   /*to mark if it has been save in plot file*/
+		u8 	kill_signal; /*save the signal value if it has, 0 means no*/
+	  #endif
 
-};
-
+	};
+#endif
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_cur, /* Current offset within the queue  */
                           *queue_top, /* Top of the list                  */
@@ -398,8 +409,11 @@ static u64 get_cur_time(void) {
 
   gettimeofday(&tv, &tz);
 
-  return (tv.tv_sec * 1000ULL) + (tv.tv_usec / 1000);
-
+#ifndef XIAOSA
+	return (tv.tv_sec * 1000ULL) + (tv.tv_usec / 1000)
+#else
+	return (tv.tv_sec * 1000ULL) + (tv.tv_usec / 1000)- (main_start_time/1000);
+#endif
 }
 
 
@@ -412,8 +426,11 @@ static u64 get_cur_time_us(void) {
 
   gettimeofday(&tv, &tz);
 
-  return (tv.tv_sec * 1000000ULL) + tv.tv_usec;
-
+#ifndef XIAOSA
+	return (tv.tv_sec * 1000000ULL) + tv.tv_usec
+#else
+	return (tv.tv_sec * 1000000ULL) + tv.tv_usec- (main_start_time/1000);
+#endif
 }
 
 
@@ -881,9 +898,23 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+/* Compact trace bytes into a smaller bitmap. We effectively just drop the
+   count information here. This is called only sporadically, for some
+   new paths. */
+static void minimize_bits(u8* dst, u8* src) {
+
+  u32 i = 0;
+
+  while (i < MAP_SIZE) {
+
+    if (*(src++)) dst[i >> 3] |= 1 << (i & 7);
+    i++;
+
+  }
+
+}
 
 /* Append new test case to the queue. */
-
 static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
@@ -892,6 +923,9 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->len          = len;
   q->depth        = cur_depth + 1;// 初始测试用例为1,生成一个后加1,表示第几代的测试用例
   q->passed_det   = passed_det;
+#ifdef DISTANCE
+	q->id=strrchr(fname, '/')+1;
+#endif
 
   if (q->depth > max_depth) max_depth = q->depth;
 
@@ -915,7 +949,15 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   }
 
   last_path_time = get_cur_time();
-
+#ifdef DISTANCE
+	//need to generate trace_mini before adding to the queue
+	if (!q->trace_mini)
+	{
+		q->trace_mini = ck_alloc(MAP_SIZE >> 3); //分配一个8192个字节,每位对应trace_bit的一个字节
+		minimize_bits(q->trace_mini, trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
+	}
+	cal_distance_with_queue(queue,q); //q应该是最新的一个,id是大的
+#endif
 }
 
 
@@ -933,6 +975,9 @@ EXP_ST void destroy_queue(void) {
 #ifdef XIAOSA
 		ck_free(q->change_op);
 		ck_free(q->fuzz_one_time);
+#endif
+#ifdef DISTANCE
+		ck_free(q->id);
 #endif
     ck_free(q);
     q = n;
@@ -1323,22 +1368,7 @@ static void remove_shm(void) {
 }
 
 
-/* Compact trace bytes into a smaller bitmap. We effectively just drop the
-   count information here. This is called only sporadically, for some
-   new paths. */
 
-static void minimize_bits(u8* dst, u8* src) {
-
-  u32 i = 0;
-
-  while (i < MAP_SIZE) {
-
-    if (*(src++)) dst[i >> 3] |= 1 << (i & 7);
-    i++;
-
-  }
-
-}
 
 
 /* When we bump into（偶然遇见） a new path, we call this to see if the path appears
@@ -4183,6 +4213,13 @@ static void maybe_delete_out_dir(void) {
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
+#ifdef DISTANCE
+	fn = alloc_printf("%s/distance_record",out_dir);
+		if (unlink(fn) && errno != ENOENT)
+			goto dir_cleanup_failed;
+		ck_free(fn);
+#endif
+
   OKF("Output dir cleanup successful.");
 
   /* Wow... is that all? If yes, celebrate! */
@@ -4321,14 +4358,17 @@ static void show_stats(void) {
 
   SAYF(TERM_HOME);
 
+//yyy
+#ifndef XIAOSA
   if (term_too_small) {
 
     SAYF(cBRI "Your terminal is too small to display the UI.\n"
          "Please resize terminal window to at least 80x25.\n" cRST);
-    //yyy
-    //return;
+
+    return;
 
   }
+#endif
 
   /* Let's start by drawing a centered banner. */
 
@@ -7302,7 +7342,15 @@ EXP_ST void check_binary(u8* fname) {
 #ifndef __APPLE__
 
   if (f_data[0] != 0x7f || memcmp(f_data + 1, "ELF", 3))
-    FATAL("Program '%s' is not an ELF binary", target_path);
+#ifdef CGC
+  {
+	  if (f_data[0] != 0x7f || memcmp(f_data + 1, "CGC", 3)) //这里添加了cgc 判断
+#endif
+		  FATAL("Program '%s' is not an ELF binary", target_path);
+
+#ifdef CGC
+  }
+#endif
 
 #else
 
@@ -8283,9 +8331,21 @@ static void y_save_each_case_execute_num(){
 
 		y_queue_cur = y_queue_cur->next;
 	}
+}
 
+/* Get unix time in microseconds  at main function begin*/ //微秒
+static u64 y_get_cur_time_us_at_start(void)
+{
+
+	struct timeval tv;
+	struct timezone tz;
+
+	gettimeofday(&tv,&tz); //系统api,获取时间
+
+	return (tv.tv_sec * 1000000ULL) + tv.tv_usec;
 
 }
+
 
 #endif //end  #ifdef XIAOSA
 
@@ -8297,6 +8357,11 @@ static void y_save_each_case_execute_num(){
 /* Main entry point */
 
 int main(int argc, char** argv) {
+
+#ifdef XIAOSA
+	//record the start time at main function
+	main_start_time=y_get_cur_time_us_at_start();
+#endif
 
   s32 opt;
   u64 prev_queued = 0;
@@ -8761,6 +8826,9 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
+#ifdef DISTANCE
+	fclose(distance_file); //关闭文件
+#endif
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
