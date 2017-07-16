@@ -949,15 +949,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   }
 
   last_path_time = get_cur_time();
-#ifdef DISTANCE
-	//need to generate trace_mini before adding to the queue
-	if (!q->trace_mini)
-	{
-		q->trace_mini = ck_alloc(MAP_SIZE >> 3); //分配一个8192个字节,每位对应trace_bit的一个字节
-		minimize_bits(q->trace_mini, trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
-	}
-	cal_distance_with_queue(queue,q); //q应该是最新的一个,id是大的
-#endif
+
 }
 
 
@@ -3398,6 +3390,16 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     if (fd < 0) PFATAL("Unable to create '%s'", fn);
     ck_write(fd, mem, len, fn);
     close(fd);
+
+#ifdef DISTANCE
+	//need to generate trace_mini before adding to the queue
+	if (!queue_top->trace_mini)
+	{
+		queue_top->trace_mini = ck_alloc(MAP_SIZE >> 3); //分配一个8192个字节,每位对应trace_bit的一个字节
+		minimize_bits(queue_top->trace_mini, trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
+	}
+	cal_distance_with_queue(queue,queue_top); //q应该是最新的一个,id是大的
+#endif
 
 
 #ifdef XIAOSA
@@ -7660,6 +7662,20 @@ EXP_ST void setup_dirs_fds(void) {
                      "pending_total, pending_favs, map_size, unique_crashes, "
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
+#ifdef DISTANCE
+  /* distance output file. */
+  	tmp = alloc_printf("%s/distance_record", out_dir);
+  	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600); //修改成覆盖模式吧
+  	if (fd < 0)
+  		PFATAL("Unable to create '%s'", tmp);
+  	ck_free(tmp);
+
+  	distance_file = fdopen(fd, "w");
+  	if (!distance_file)
+  		PFATAL("fdopen() failed");
+
+  	fprintf(distance_file, "# id, id, distance\n");
+#endif
 
 }
 
@@ -8851,6 +8867,14 @@ stop_fuzzing:
 	ck_free(tmpy);
 
 	close(fdy);
+#endif
+
+#ifdef DISTANCE
+	tmpy = alloc_printf("%s/distance_record",out_dir);
+		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
+		if (fdy < 0)
+			PFATAL("Unable to create '%s'","/tmp/trace");
+		ck_free(tmpy);
 #endif
 
   exit(0);

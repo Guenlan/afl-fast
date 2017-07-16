@@ -15,7 +15,8 @@ struct comp {
 
 set<DP,comp> dis_list; // 记录所有的轨迹, 这个在c中没法调用 对于元素是自定义的结构体,还需要重写排序算法
 
-u32 cal_distance_with_queue(struct queue_entry *queue,struct queue_entry *q)//q1 是最新的
+
+u32 cal_distance_with_queue(struct queue_entry *queue,struct queue_entry *q)//q1 是最新的 //左边为旧,小号;右边是新,大号
 {
 	struct queue_entry *queue_cur = queue;
 	double distance=0;
@@ -30,7 +31,9 @@ u32 cal_distance_with_queue(struct queue_entry *queue,struct queue_entry *q)//q1
 		DP tmp;
 		tmp.distance=distance;
 		tmp.fname_min=queue_cur->fname;
+		tmp.fmin_bitmap_size=queue_cur->bitmap_size;
 		tmp.fname_max=q->fname;
+		tmp.fmax_bitmap_size=q->bitmap_size;
 		dis_list.insert(tmp); //插入之后是有序的
 		queue_cur = queue_cur->next;
 	}
@@ -41,20 +44,39 @@ u32 cal_distance_with_queue(struct queue_entry *queue,struct queue_entry *q)//q1
 }
 
 
-//void update_distance_file(u8* fname_min, u8* fnamer_max, double distance)
+//void update_distance_ iter = stuSet.find(stuTemp);file(u8* fname_min, u8* fnamer_max, double distance)
 void update_distance_file()
 {
 	//n个测试用例,就有n(n-1)/2次比较
 	//输出文件定义
 	fseek(distance_file,0,0);
+	set<u8*>cached_list;
 	// 遍历 set
 	for (auto it = dis_list.begin(), end = dis_list.end(); it != end; it++)
 	{
 		DP tmp = *it; //按照distance下的顺序进行
-		fprintf(distance_file, "%s; %s; %0.f \n",
-				tmp.fname_min, tmp.fname_max, tmp.distance); /* ignore errors */
+		if (!cached_list.empty())
+		{
+			if (cached_list.find(tmp.fname_min) != cached_list.end() and cached_list.find(tmp.fname_max) != cached_list.end())
+			{
+				continue;
+			}
+		}
+		if (tmp.fmax_bitmap_size>tmp.fmin_bitmap_size  ) //max 表示id大的,即是新的,但是新的也不一定好
+		{
+			fprintf(distance_file, "%s; %s; %0.f \n", "", tmp.fname_max, tmp.distance);
+		}
+		else
+		{
+			fprintf(distance_file, "%s; %s; %0.f \n", tmp.fname_min, "", tmp.distance);
+		}
+
+
 		fflush(distance_file);
+		cached_list.insert(tmp.fname_min);
+		cached_list.insert(tmp.fname_max);
 	}
+
 
 
 }
