@@ -25,7 +25,7 @@
 //yyy
 #define XIAOSA
 #define CGC
-#define DISTANCE
+#define SORT
 
 /******************************************************
  *                                                    *

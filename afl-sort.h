@@ -1,5 +1,5 @@
-#ifndef AFL_DISTANCD_H
-#define AFL_DISTANCD_H
+#ifndef AFL_SORT_H
+#define AFL_SORT_H
 
 
 #include "types.h"
@@ -9,13 +9,10 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-
 #include <stdbool.h>
-
-
 #include <sys/file.h>
 
-
+//声明
 extern FILE* distance_file; /*the file to record the distance*/ //defined in afl-fuzz 这个要修改成
 
 struct queue_entry
@@ -58,11 +55,12 @@ struct queue_entry
 	u8 kill_signal; /*save the signal value if it has, 0 means no*/
 #endif
 
-#ifdef DISTANCE
+#ifdef SORT
 	u8* id; /*the short name of the testcase*/
 #endif
 
 };
+
 typedef struct distance_power {
     double distance;
     u8* fname_min;
@@ -72,7 +70,16 @@ typedef struct distance_power {
 }DP; // the distance between two inputs
 //左边为旧,小号;右边是新,大号,这里的大小表示id
 
-
+enum {
+    /* 00 */ NO_SORT_0,
+    /* 01 */ Random_Sort_1,
+    /* 02 */ BT_dup_Sort_2,
+    /* 03 */ BT_no_dup_Sort_3,
+    /* 04 */ BA_Sort_4,
+	/* 05 */ MIn_Max_Sort_5,
+	/* 06 */ Short_first_Sort_6,
+	/* 07 */ Short_by_hamming_7,
+};
 
 
 //function declaration---------------------------------------------------------------------
@@ -81,14 +88,26 @@ typedef struct distance_power {
 extern "C" {
 #endif
 
-u32 cal_distance_with_queue(struct queue_entry *queue, struct queue_entry *q);
+
+// Initialize the searcher.
+// Arg1: search_strategy: specify which searcher will use
+// Return: 1 if intilized successfully, otherwise 0.
+u8 initSort(u8 sort_id);
+
+//when new testcase generated
+void on_new_seed_generated(struct queue_entry *queue, struct queue_entry *q);
+
+
 //void update_distance_file(u8* fnamer, u8* fnamel, double distance);
-void update_distance_file();
+void update_sort_file();
+
+
+
+
 
 #ifdef _cplusplus
 }
 #endif
 //function declaration end--------------------------------------------------------------------
 
-
-#endif
+#endif //AFL_SORT_H

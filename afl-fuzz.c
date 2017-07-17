@@ -33,9 +33,9 @@
 #include "hash.h"
 #include "khash.h" // aflfast 添加的
 
-#ifdef DISTANCE
+#ifdef SORT
 	//distance
-	#include "afl-distance.h"
+	#include "afl-sort.h"
 #endif
 
 
@@ -268,11 +268,11 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 #endif /* HAVE_AFFINITY */
 
 static FILE* plot_file;               /* Gnuplot output file              */
-#ifdef DISTANCE
+#ifdef SORT
        FILE* distance_file; /*the file to record the distance*/
 #endif
 
-#ifndef DISTANCE
+#ifndef SORT
 	struct queue_entry {
 
 	  u8* fname;                          /* File name for the test case      */
@@ -915,7 +915,7 @@ static void minimize_bits(u8* dst, u8* src) {
 }
 
 /* Append new test case to the queue. */
-static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det) { //这里添加的测试用例还没有经过calibration
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -923,7 +923,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->len          = len;
   q->depth        = cur_depth + 1;// 初始测试用例为1,生成一个后加1,表示第几代的测试用例
   q->passed_det   = passed_det;
-#ifdef DISTANCE
+#ifdef SORT
 	q->id=strrchr(fname, '/')+1;
 #endif
 
@@ -968,7 +968,7 @@ EXP_ST void destroy_queue(void) {
 		ck_free(q->change_op);
 		ck_free(q->fuzz_one_time);
 #endif
-#ifdef DISTANCE
+#ifdef SORT
 		ck_free(q->id);
 #endif
     ck_free(q);
@@ -3074,6 +3074,10 @@ static void perform_dry_run(char** argv) {
 
     if (q->var_behavior) WARNF("Instrumentation output varies across runs.");
 
+#ifdef SORT
+    //初始测试用例发现
+    on_new_seed_generated(queue, q);
+#endif
     q = q->next;
 
   }
@@ -3391,14 +3395,14 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     ck_write(fd, mem, len, fn);
     close(fd);
 
-#ifdef DISTANCE
+#ifdef SORT
 	//need to generate trace_mini before adding to the queue
 	if (!queue_top->trace_mini)
 	{
 		queue_top->trace_mini = ck_alloc(MAP_SIZE >> 3); //分配一个8192个字节,每位对应trace_bit的一个字节
 		minimize_bits(queue_top->trace_mini, trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
 	}
-	cal_distance_with_queue(queue,queue_top); //q应该是最新的一个,id是大的
+	on_new_seed_generated(queue,queue_top);//q应该是最新的一个,id是大的
 #endif
 
 
@@ -4215,7 +4219,7 @@ static void maybe_delete_out_dir(void) {
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
-#ifdef DISTANCE
+#ifdef SORT
 	fn = alloc_printf("%s/distance_record",out_dir);
 		if (unlink(fn) && errno != ENOENT)
 			goto dir_cleanup_failed;
@@ -7662,7 +7666,7 @@ EXP_ST void setup_dirs_fds(void) {
                      "pending_total, pending_favs, map_size, unique_crashes, "
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
-#ifdef DISTANCE
+#ifdef SORT
   /* distance output file. */
   	tmp = alloc_printf("%s/distance_record", out_dir);
   	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600); //修改成覆盖模式吧
@@ -8390,7 +8394,9 @@ int main(int argc, char** argv) {
 	s32 fdy; //file IO
 	u8 *tmpy = ""; ///yyy temp alloc
 #endif
-
+#ifdef SORT
+	u32  sort_id = 0;
+#endif
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
   char** use_argv;
 
@@ -8407,8 +8413,11 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
+#ifdef SORT
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qp:s:")) > 0)
+#else
   while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qp:")) > 0)
-
+#endif
     switch (opt) {
 
       case 'i': /* input dir */
@@ -8591,6 +8600,21 @@ int main(int argc, char** argv) {
         }
         break;
 
+#ifdef SORT
+	  case 's': /* sort */
+		if (sscanf(optarg, "%u", &sort_id) < 0 //读取的格式
+			|| sort_id > 6)
+				FATAL("Unsupported searcher");
+		// sort_id:
+		// 0 no_sort
+		// 1 random
+		// 2 BT_dup
+		// 3 BT_no_dup
+		// 4 BA
+		// 5 MIN-MAX
+		// 6 Short-first
+			break;
+#endif
       default:
 
         usage(argv[0]);
@@ -8662,8 +8686,12 @@ int main(int argc, char** argv) {
   read_testcases();
   load_auto();
 
-  pivot_inputs();
+  pivot_inputs(); //转移到queue下中
 
+#ifdef SORT
+  // FIXME: When is the best time to initialize the searcher?
+  initSort(sort_id); // 增加筛选机制,初始化,根据搜索策略
+#endif
   if (extras_dir) load_extras(extras_dir);
 
   if (!timeout_given) find_timeout();
@@ -8720,8 +8748,6 @@ int main(int argc, char** argv) {
 	tmpy = alloc_printf("%s/fuzz_one_end",out_dir);
 	remove(tmpy);
 	ck_free(tmpy);
-
-
 #endif
 
   perform_dry_run(use_argv);
@@ -8842,7 +8868,7 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
-#ifdef DISTANCE
+#ifdef SORT
 	fclose(distance_file); //关闭文件
 #endif
   destroy_queue();
@@ -8869,7 +8895,7 @@ stop_fuzzing:
 	close(fdy);
 #endif
 
-#ifdef DISTANCE
+#ifdef SORT
 	tmpy = alloc_printf("%s/distance_record",out_dir);
 		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND,0600); //需要追加的模式
 		if (fdy < 0)

@@ -74,9 +74,9 @@ afl-as: afl-as.c afl-as.h $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)
 	ln -sf afl-as as
 
-afl-fuzz: afl-fuzz.c $(COMM_HDR) afl-distance.o distance.o |  test_x86
+afl-fuzz: afl-fuzz.c $(COMM_HDR) afl-sort.o sort.o |  test_x86
 	$(CC) $(CFLAGS) -c $@.c -o $@.o 
-	$(CXX) $(CFALGS) $(CXXFLAGS) $@.o afl-distance.o distance.o -o $@ $(LDFLAGS)	
+	$(CXX) $(CFALGS) $(CXXFLAGS) $@.o afl-sort.o sort.o -o $@ $(LDFLAGS)	
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)
@@ -90,11 +90,11 @@ afl-analyze: afl-analyze.c $(COMM_HDR) | test_x86
 afl-gotcpu: afl-gotcpu.c $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)
 
-afl-distance.o: afl-distance.cpp $(COMM_HDR)
-	$(CXX) $(CXXFLAGS) -c afl-distance.cpp -o $@
+afl-sort.o: afl-sort.cpp $(COMM_HDR)
+	$(CXX) $(CXXFLAGS) -c afl-sort.cpp -o $@
 
-distance.o: distance.cpp $(COMM_HDR)
-	$(CXX) $(CXXFLAGS) -c distance.cpp -o $@
+sort.o: sort.cpp $(COMM_HDR)
+	$(CXX) $(CXXFLAGS) -c sort.cpp -o $@
 
 ifndef AFL_NO_X86
 
