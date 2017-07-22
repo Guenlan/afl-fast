@@ -16,7 +16,7 @@ struct comp {
 set<DP,comp> dis_list; // 记录所有的轨迹, 这个在c中没法调用 对于元素是自定义的结构体,还需要重写排序算法
 
 
-Sort* AFLSort = NULL;
+Sort* AFLSort = NULL; //
 
 //function---------------------------------------------------------------------------
 u8 initSort(u8 sort_id) {
@@ -43,6 +43,9 @@ u8 initSort(u8 sort_id) {
 	case Short_first_Sort_6: {
 		AFLSort = new Short_first_Sort();
 		break;	}
+	case Short_by_hamming_7: {
+			AFLSort = new Short_by_hamming();
+			break;	}
 
 	default:
 		break;

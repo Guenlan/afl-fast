@@ -24,7 +24,7 @@ MISC_PATH   = $(PREFIX)/share/afl
 
 # PROGS intentionally omit afl-as, which gets installed elsewhere.
 
-PROGS       = afl-gcc afl-fuzz afl-showmap afl-tmin afl-gotcpu afl-analyze
+PROGS       = afl-gcc afl-fuzz afl-showmap afl-tmin afl-gotcpu afl-analyze  afl-sort.o sort.o 
 SH_PROGS    = afl-plot afl-cmin afl-whatsup
 
 #CFLAGS     ?= -O3 -funroll-loops
@@ -90,10 +90,10 @@ afl-analyze: afl-analyze.c $(COMM_HDR) | test_x86
 afl-gotcpu: afl-gotcpu.c $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)
 
-afl-sort.o: afl-sort.cpp $(COMM_HDR)
+afl-sort.o: afl-sort.h afl-sort.cpp $(COMM_HDR)
 	$(CXX) $(CXXFLAGS) -c afl-sort.cpp -o $@
 
-sort.o: sort.cpp $(COMM_HDR)
+sort.o: sort.h sort.cpp $(COMM_HDR)
 	$(CXX) $(CXXFLAGS) -c sort.cpp -o $@
 
 ifndef AFL_NO_X86

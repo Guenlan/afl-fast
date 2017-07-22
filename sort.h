@@ -11,11 +11,10 @@ extern "C"{
 
 using namespace std;
 
+
 //变量声明
 class Sort;
 extern "C" Sort* AFLSort;  // 表示以c语言的形式编译
-
-
 
 //*********************************************************************
 //parent
@@ -29,8 +28,11 @@ public:
 
 
 	virtual ~Sort(); //虚函数
-//	virtual void on_new_seed_generated(struct queue_entry *queue, struct queue_entry *q);
+
+	virtual u8 on_new_seed_generate(struct queue_entry *queue, struct queue_entry *q);// 必须有声明, 有定义,才能编译通过
+
 //	virtual void update_sort_file();
+//	virtual void bbb();
 };
 //----------------------------------------------------------------------
 
@@ -127,7 +129,7 @@ public:
 	Short_by_hamming(): Sort() { }
 	~Short_by_hamming() {}
 
-//	void on_new_seed_generated(struct queue_entry *queue, struct queue_entry *q);
+//	u8 on_new_seed_generate(struct queue_entry *queue, struct queue_entry *q); //父类中有声明,子类中必须有声明, 表示覆盖吗
 //	void update_sort_file();
 };
 
