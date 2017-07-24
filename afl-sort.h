@@ -6,6 +6,7 @@
 #include "config.h"
 #include "debug.h"
 
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,7 +14,7 @@
 #include <sys/file.h>
 
 //声明
-extern FILE* distance_file; /*the file to record the distance*/ //defined in afl-fuzz 这个要修改成
+extern FILE* afl_to_angr; /*the file to record the distance*/ //defined in afl-fuzz 这个要修改成
 
 struct queue_entry
 {
@@ -29,9 +30,9 @@ struct queue_entry
 	favored, /* Currently favored?               */
 	fs_redundant; /* Marked as redundant in the fs?   */
 
-	u32 bitmap_size, /* Number of bits set in bitmap     */
-	fuzz_level, /* Number of fuzzing iterations     */ //被fuzz过的次数吗，文章中的s(i)
-			exec_cksum; /* Checksum of the execution trace  */
+	u32 bitmap_size, /* Number of bits set in bitmap     */ //这里记录了元组的个数,没有统计每个元组出现的次数
+		fuzz_level, /* Number of fuzzing iterations     */ //被fuzz过的次数吗，文章中的s(i)
+		exec_cksum; /* Checksum of the execution trace  */
 
 	u64 exec_us, /* Execution time (us)              */
 	handicap, /* Number of queue cycles behind    */
@@ -56,19 +57,15 @@ struct queue_entry
 #endif
 
 #ifdef SORT
-	u8* id; /*the short name of the testcase*/
+	u8* short_name; /*the short name of the testcase,without the base dir*/
+	u32 bitmap_size_dup; /* Number of bits set in bitmap ,include the dup ones    */  //duplicate of bitmapsize
+	u32 min_distance; // select the  minimum distance as the attribute  of the testcase
+	u8* close_testcase; // the closest testcase with current testcase
 #endif
 
 };
 
-typedef struct distance_power {
-    double distance;
-    u8* fname_min;
-    u32 fmin_bitmap_size;
-    u8* fname_max;
-    u32 fmax_bitmap_size;
-}DP; // the distance between two inputs
-//左边为旧,小号;右边是新,大号,这里的大小表示id
+
 
 enum {
     /* 00 */ NO_SORT_0,
@@ -96,13 +93,6 @@ u8 initSort(u8 sort_id);
 
 //when new testcase generated
 void on_new_seed_generated(struct queue_entry *queue, struct queue_entry *q);
-
-
-//void update_distance_file(u8* fnamer, u8* fnamel, double distance);
-void update_sort_file();
-
-
-
 
 
 #ifdef _cplusplus

@@ -30,6 +30,7 @@
 #include "types.h"
 #include "debug.h"
 #include "alloc-inl.h"
+
 #include "hash.h"
 #include "khash.h" // aflfast 添加的
 
@@ -269,7 +270,7 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 
 static FILE* plot_file;               /* Gnuplot output file              */
 #ifdef SORT
-       FILE* distance_file; /*the file to record the distance*/
+       FILE* afl_to_angr; /*the file to record the distance*/
 #endif
 
 #ifndef SORT
@@ -924,7 +925,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) { //这里添加的�
   q->depth        = cur_depth + 1;// 初始测试用例为1,生成一个后加1,表示第几代的测试用例
   q->passed_det   = passed_det;
 #ifdef SORT
-	q->id=strrchr(fname, '/')+1;
+  q->short_name=strrchr(fname, '/')+1;
 #endif
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -969,7 +970,8 @@ EXP_ST void destroy_queue(void) {
 		ck_free(q->fuzz_one_time);
 #endif
 #ifdef SORT
-		ck_free(q->id);
+		ck_free(q->short_name);
+		ck_free(q->close_testcase);
 #endif
     ck_free(q);
     q = n;
@@ -1134,8 +1136,32 @@ static u32 count_bits(u8* mem) {
 /* Count the number of bytes set in the bitmap. Called fairly sporadically,
    mostly to update the status screen or calibrate and examine confirmed
    new paths. */
+// 只统计元组的个数,没有统计每个元组出现的次数
+static u32 count_bytes(u8* mem) { //mem指向共享内存
 
-static u32 count_bytes(u8* mem) {
+  u32* ptr = (u32*)mem;
+  u32  i   = (MAP_SIZE >> 2);
+  u32  ret = 0;
+
+  while (i--) {
+
+    u32 v = *(ptr++); //v 指向一个32位的内存
+
+    if (!v) continue;
+    if (v & FF(0)) ret++; //FF(0) is 255 0xff
+	if (v & FF(1)) ret++; // FF(1) is 65280  0xff00
+	if (v & FF(2)) ret++;  //0xff0000
+	if (v & FF(3)) ret++; //0xff000000
+
+  }
+
+  return ret;
+
+}
+
+#ifdef SORT
+//统计元组的个数,如果同一个元组出现的次数为多次,则记多次
+static u32 count_bytes_dup(u8* mem) {
 
   u32* ptr = (u32*)mem;
   u32  i   = (MAP_SIZE >> 2);
@@ -1146,16 +1172,17 @@ static u32 count_bytes(u8* mem) {
     u32 v = *(ptr++);
 
     if (!v) continue;
-    if (v & FF(0)) ret++;
-    if (v & FF(1)) ret++;
-    if (v & FF(2)) ret++;
-    if (v & FF(3)) ret++;
+    if (v & FF(0)) ret+= v>>0 & FF(0); //FF(0) is 255 0xff
+    if (v & FF(1)) ret+= v>>8 & FF(0); // FF(1) is 65280  0xff00
+    if (v & FF(2)) ret+= v>>16 & FF(0);  //0xff0000
+    if (v & FF(3)) ret+= v>>24& FF(0); //0xff000000
 
   }
 
   return ret;
 
 }
+#endif
 
 
 /* Count the number of non-255 bytes set in the bitmap. Used strictly for the
@@ -2831,6 +2858,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
+  q->bitmap_size_dup=count_bytes_dup(trace_bits);
   q->handicap    = handicap;//performdry中为0,表示还没有开始
   q->cal_failed  = 0;
 
@@ -3210,6 +3238,9 @@ static void pivot_inputs(void) {
     link_or_copy(q->fname, nfn);
     ck_free(q->fname);
     q->fname = nfn;
+	#ifdef SORT
+	  q->short_name=strrchr(q->fname, '/')+1;
+	#endif
 
     /* Make sure that the passed_det value carries over, too. */
 
@@ -4220,7 +4251,7 @@ static void maybe_delete_out_dir(void) {
   ck_free(fn);
 
 #ifdef SORT
-	fn = alloc_printf("%s/distance_record",out_dir);
+	fn = alloc_printf("%s/afl_to_angr",out_dir);
 		if (unlink(fn) && errno != ENOENT)
 			goto dir_cleanup_failed;
 		ck_free(fn);
@@ -7271,7 +7302,7 @@ EXP_ST void check_binary(u8* fname) {
 
   if (strchr(fname, '/') || !(env_path = getenv("PATH"))) {
 
-    target_path = ck_strdup(fname);
+    target_path = ck_strdup(fname); //改变了名称
     if (stat(target_path, &st) || !S_ISREG(st.st_mode) ||
         !(st.st_mode & 0111) || (f_len = st.st_size) < 4)
       FATAL("Program '%s' not found or not executable", fname);
@@ -7668,17 +7699,16 @@ EXP_ST void setup_dirs_fds(void) {
                      /* ignore errors */
 #ifdef SORT
   /* distance output file. */
-  	tmp = alloc_printf("%s/distance_record", out_dir);
+  	tmp = alloc_printf("%s/afl_to_angr", out_dir);
   	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600); //修改成覆盖模式吧
   	if (fd < 0)
   		PFATAL("Unable to create '%s'", tmp);
   	ck_free(tmp);
 
-  	distance_file = fdopen(fd, "w");
-  	if (!distance_file)
+  	afl_to_angr = fdopen(fd, "w");
+  	if (!afl_to_angr)
   		PFATAL("fdopen() failed");
 
-  	fprintf(distance_file, "# id, id, distance\n");
 #endif
 
 }
@@ -8603,7 +8633,7 @@ int main(int argc, char** argv) {
 #ifdef SORT
 	  case 's': /* sort */
 		if (sscanf(optarg, "%u", &sort_id) < 0 //读取的格式
-			|| sort_id > 6)
+			|| sort_id > 7)
 				FATAL("Unsupported searcher");
 		// sort_id:
 		// 0 no_sort
@@ -8613,6 +8643,7 @@ int main(int argc, char** argv) {
 		// 4 BA
 		// 5 MIN-MAX
 		// 6 Short-first
+		// 7 sort-by-hamming
 			break;
 #endif
       default:
@@ -8869,7 +8900,7 @@ stop_fuzzing:
 
   fclose(plot_file);
 #ifdef SORT
-	fclose(distance_file); //关闭文件
+	fclose(afl_to_angr); //关闭文件
 #endif
   destroy_queue();
   destroy_extras();
