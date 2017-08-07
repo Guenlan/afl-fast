@@ -902,16 +902,70 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 /* Compact trace bytes into a smaller bitmap. We effectively just drop the
    count information here. This is called only sporadically, for some
    new paths. */
-static void minimize_bits(u8* dst, u8* src) {
+#ifdef XIAOSA
+	static void minimize_bits(struct queue_entry* queue_top, u8* dst, u8* src) { //q->trace_mini, trace_bits
+#else
+	static void minimize_bits(u8* dst, u8* src) { //q->trace_mini, trace_bits
+#endif
 
   u32 i = 0;
 
   while (i < MAP_SIZE) {
-
-    if (*(src++)) dst[i >> 3] |= 1 << (i & 7);
+    if (*(src++))
+    	dst[i >> 3] |= 1 << (i & 7); //trace_mini上的每一位对应trace_bits上的一个字节
     i++;
-
   }
+
+
+#ifdef XIAOSA
+//保存新的测试用例的基本块地址跳跃信息
+//先保存总的信息,方便查看
+  u8 * tmpy;
+  s32 fdy,j=0,ylen;
+  tmpy = alloc_printf("%s/queue_trace_mini/total",out_dir);
+  fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND ,0600);
+  if (fdy < 0)
+	  PFATAL("Unable to create '%s'",tmpy);
+  ck_free(tmpy);
+
+	tmpy =alloc_printf(
+			"id:%06u %s is in the top_rate, block number is:%-6u,its parent is id:%06d\n",
+			queued_paths - 1, queue_top->in_top_rate ? "   " : "not",
+			queue_top->bitmap_size, current_entry);
+	ylen = snprintf(NULL, 0, "%s", tmpy);
+	write(fdy, tmpy, ylen);
+	ck_free(tmpy);
+	close(fdy);
+
+//保存每个测试用例的路径到一个单独文件
+	tmpy = alloc_printf("%s/queue_trace_mini/%s",out_dir,queue_top->short_name); //前面add_to_queue使得queued_paths+1,这里-1保持id一致
+	fdy = open(tmpy,O_WRONLY | O_CREAT | O_EXCL,0600);
+	if (fdy < 0)
+		PFATAL("Unable to create '%s'",tmpy);
+	queue_top->trace_mini_path=tmpy;
+	ck_free(tmpy);
+	//保存到每个文件
+	if (queue_top->trace_mini != 0) //这里为0,就是表示没有进入top_rate数组  xiaosa在update函数中修改了,所有的都记录
+	{
+		i=0;
+		j=0;
+		while (i < MAP_SIZE)
+			{ //65536次循环,16位11
+				if (queue_top->trace_mini [ i >> 3 ] & 1 << (i & 7))
+				{	//即该基本被执行
+					/*if ((j & 15) == 0 && (j != 0))
+						write(fd,"\n",1);*/
+					tmpy = alloc_printf("%-6u\n",i);
+					ylen = snprintf(NULL,0,"%s",tmpy);
+					write(fdy,tmpy,ylen);	//保存新的测试用例的元组轨迹
+					ck_free(tmpy);
+					j++;
+				}
+				i++;
+			}
+		}
+	close(fdy);
+#endif
 
 }
 
@@ -972,6 +1026,7 @@ EXP_ST void destroy_queue(void) {
 #ifdef SORT
 		ck_free(q->short_name);
 		ck_free(q->close_testcase);
+		ck_free(q->trace_mini_path);
 #endif
     ck_free(q);
     q = n;
@@ -1176,11 +1231,8 @@ static u32 count_bytes_dup(u8* mem) {
     if (v & FF(1)) ret+= v>>8 & FF(0); // FF(1) is 65280  0xff00
     if (v & FF(2)) ret+= v>>16 & FF(0);  //0xff0000
     if (v & FF(3)) ret+= v>>24& FF(0); //0xff000000
-
   }
-
   return ret;
-
 }
 #endif
 
@@ -1453,7 +1505,7 @@ static void update_bitmap_score(struct queue_entry* q) { //只在在trim_case和
 #endif
        if (!q->trace_mini) {
          q->trace_mini = ck_alloc(MAP_SIZE >> 3);
-         minimize_bits(q->trace_mini, trace_bits);
+         minimize_bits(q, q->trace_mini, trace_bits);
        }
 
        score_changed = 1;
@@ -1465,7 +1517,7 @@ static void update_bitmap_score(struct queue_entry* q) { //只在在trim_case和
 	if (!q->trace_mini)
 	{
 		q->trace_mini = ck_alloc(MAP_SIZE >> 3); //分配一个8192个字节,每位对应trace_bit的一个字节
-		minimize_bits(q->trace_mini,trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
+		minimize_bits(q, q->trace_mini,trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
 		q->in_top_rate = 0;
 	}
 #endif
@@ -2295,6 +2347,9 @@ EXP_ST void init_forkserver(char** argv) {
     close(dev_null_fd);
     close(dev_urandom_fd);
     close(fileno(plot_file));
+#ifdef SORT
+    close(fileno(afl_to_angr));
+#endif
 
     /* This should improve performance a bit, since it stops the linker from
        doing extra work post-fork(). */
@@ -2567,6 +2622,9 @@ static u8 run_target(char** argv) {
       close(out_dir_fd);
       close(dev_urandom_fd);
       close(fileno(plot_file));
+#ifdef SORT
+    close(fileno(afl_to_angr));
+#endif
 
       /* Set sane defaults for ASAN if nothing else specified. */
 
@@ -3431,63 +3489,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 	if (!queue_top->trace_mini)
 	{
 		queue_top->trace_mini = ck_alloc(MAP_SIZE >> 3); //分配一个8192个字节,每位对应trace_bit的一个字节
-		minimize_bits(queue_top->trace_mini, trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
+		minimize_bits(queue_top, queue_top->trace_mini, trace_bits); //去除了滚筒关系 ,0表示没有元组关系,1表示有
 	}
-	on_new_seed_generated(queue,queue_top);//q应该是最新的一个,id是大的
-#endif
-
-
-#ifdef XIAOSA
-		//保存新的测试用例的基本块地址跳跃信息
-		//这一部分可以写到minimize_bits函数里
-
-		//先保存总的信息,方便查看
-		tmpy = alloc_printf("%s/queue_trace_mini/total",out_dir);
-		fdy = open(tmpy,O_WRONLY | O_CREAT | O_APPEND ,0600);
-		if (fdy < 0)
-			PFATAL("Unable to create '%s'",tmpy);
-		ck_free(tmpy);
-
-		tmpy =
-				alloc_printf(
-						"id:%06u %s is in the top_rate, block number is:%-6u,its parent is id:%06d\n",
-						queued_paths - 1,queue_top->in_top_rate ? "   " : "not",
-						queue_top->bitmap_size,current_entry);
-		ylen = snprintf(NULL,0,"%s",tmpy);
-		write(fdy,tmpy,ylen);
-		ck_free(tmpy);
-		close(fdy);
-
-#if 1
-		//保存每个测试用例的路径到一个单独文件
-		tmpy = alloc_printf("%s/queue_trace_mini/%u",out_dir,queued_paths - 1); //前面add_to_queue使得queued_paths+1,这里-1保持id一致
-		fdy = open(tmpy,O_WRONLY | O_CREAT | O_EXCL,0600);
-		if (fdy < 0)
-			PFATAL("Unable to create '%s'",tmpy);
-		ck_free(tmpy);
-
-
-		if (queue_top->trace_mini != 0) //这里为0,就是表示没有进入top_rate数组  xiaosa在update函数中修改了,所有的都记录
-		{
-
-			while (i < MAP_SIZE)
-			{ //65536次循环,16位11
-				if (queue_top->trace_mini [ i >> 3 ] & 1 << (i & 7))
-				{	//即该基本被执行
-					/*if ((j & 15) == 0 && (j != 0))
-						write(fd,"\n",1);*/
-					tmpy = alloc_printf("%-6u\n",i);
-					ylen = snprintf(NULL,0,"%s",tmpy);
-					write(fdy,tmpy,ylen);	//保存新的测试用例
-					ck_free(tmpy);
-					j++;
-				}
-				i++;
-			}
-		}
-#endif
-		close(fdy);
-
+	on_new_seed_generated(queue,queue_top);//q应该是最新的一个,id是大的 发现新的测试用例
 #endif
 
 
@@ -3848,9 +3852,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              last_hang_time / 1000, total_execs - last_crash_execs,
              exec_tmout, use_banner, orig_cmdline);
              /* ignore errors */
-
   fclose(f);
-
 }
 
 
@@ -4251,8 +4253,8 @@ static void maybe_delete_out_dir(void) {
   ck_free(fn);
 
 #ifdef SORT
-	fn = alloc_printf("%s/afl_to_angr",out_dir);
-		if (unlink(fn) && errno != ENOENT)
+  fn = alloc_printf("%s/afl_to_angr",out_dir);
+		if (unlink(fn) && errno != ENOENT) //删除文件
 			goto dir_cleanup_failed;
 		ck_free(fn);
 #endif
@@ -7690,7 +7692,7 @@ EXP_ST void setup_dirs_fds(void) {
   if (fd < 0) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
-  plot_file = fdopen(fd, "w");
+  plot_file = fdopen(fd, "w"); //建立一个流
   if (!plot_file) PFATAL("fdopen() failed");
 
   fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
@@ -7698,7 +7700,7 @@ EXP_ST void setup_dirs_fds(void) {
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
 #ifdef SORT
-  /* distance output file. */
+  /* output file. */
   	tmp = alloc_printf("%s/afl_to_angr", out_dir);
   	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600); //修改成覆盖模式吧
   	if (fd < 0)
@@ -8900,7 +8902,7 @@ stop_fuzzing:
 
   fclose(plot_file);
 #ifdef SORT
-	fclose(afl_to_angr); //关闭文件
+  fclose(afl_to_angr); //关闭文件
 #endif
   destroy_queue();
   destroy_extras();

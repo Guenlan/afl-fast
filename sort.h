@@ -166,10 +166,10 @@ public:
 
 typedef struct distance_power {
     double distance;
-    u8* fname_min;
-    u32 fmin_bitmap_size;
-    u8* fname_max;
-    u32 fmax_bitmap_size;
+    u8* fname_small;
+    u32 fsmall_bitmap_size;
+    u8* fname_big;
+    u32 fbig_bitmap_size;
 }DP_7; // the distance between two inputs
 //end 7 ---------------------------------------------------------------------------------------------
 

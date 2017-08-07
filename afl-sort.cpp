@@ -21,7 +21,7 @@ u8 initSort(u8 sort_id) {
 	case BA_Sort_4: {
 		AFLSort = new BA_Sort(sort_id);
 		break;	}
-	case MIn_Max_Sort_5: {
+	case Min_Max_Sort_5: {
 		AFLSort = new Min_Max_Sort(sort_id);
 		break;	}
 	case Short_first_Sort_6: {

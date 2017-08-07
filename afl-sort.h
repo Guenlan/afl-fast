@@ -38,7 +38,7 @@ struct queue_entry
 	handicap, /* Number of queue cycles behind    */
 	depth; /* Path depth                       */
 
-	u8* trace_mini; /* Trace bytes, if kept             */
+	u8* trace_mini; /* Trace bytes, if kept         */ //trace_mini上的每一位对应trace_bit上的一个字节
 	u32 tc_ref; /* Trace bytes ref count            */
 
 	struct queue_entry *next, /* Next element, if any             */
@@ -61,6 +61,7 @@ struct queue_entry
 	u32 bitmap_size_dup; /* Number of bits set in bitmap ,include the dup ones    */  //duplicate of bitmapsize
 	u32 min_distance; // select the  minimum distance as the attribute  of the testcase
 	u8* close_testcase; // the closest testcase with current testcase
+	u8* trace_mini_path; // the path to save the trace_mini
 #endif
 
 };
@@ -73,7 +74,7 @@ enum {
     /* 02 */ BT_dup_Sort_2,
     /* 03 */ BT_no_dup_Sort_3,
     /* 04 */ BA_Sort_4,
-	/* 05 */ MIn_Max_Sort_5,
+	/* 05 */ Min_Max_Sort_5,
 	/* 06 */ Short_first_Sort_6,
 	/* 07 */ Short_by_hamming_7,
 };
