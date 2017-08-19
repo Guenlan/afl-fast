@@ -24,6 +24,8 @@
 #define VERSION             "2.33b"
 //yyy
 #define XIAOSA
+#define CGC
+#define SORT
 
 /******************************************************
  *                                                    *
@@ -134,8 +136,17 @@
 /* Limits for the test case trimmer. The absolute minimum chunk size; and
    the starting and ending divisors for chopping up the input file: */
 
-#define TRIM_MIN_BYTES      4
-#define TRIM_START_STEPS    16
+#ifdef XIAOSA
+	#define TRIM_MIN_BYTES      4 //a definition by xiaosa
+#else
+	#define TRIM_MIN_BYTES      4  //default
+#endif
+
+#ifdef XIAOSA
+	#define TRIM_START_STEPS      16 //a definition by xiaosa
+#else
+	#define TRIM_START_STEPS      16 //default
+#endif
 #define TRIM_END_STEPS      1024
 
 /* Maximum size of input file, in bytes (keep under 100MB): */
@@ -319,7 +330,11 @@
    problems with complex programs). You need to recompile the target binary
    after changing this - otherwise, SEGVs may ensue. */
 
+#ifdef CGC
+#define MAP_SIZE_POW2       17
+#else
 #define MAP_SIZE_POW2       16
+#endif
 #define MAP_SIZE            (1 << MAP_SIZE_POW2)
 
 /* Maximum allocator request size (keep well under INT_MAX): */
